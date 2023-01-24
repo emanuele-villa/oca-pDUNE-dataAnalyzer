@@ -64,7 +64,7 @@ int clusterize_detector(int board, int side, int minADC_h, int maxADC_h, int min
                         bool invert, float maxCN, int cntype, int NVas,
                         float highthreshold, float lowthreshold, bool absolute,
                         bool symmetric, int symmetricwidth,
-                        int sensor_pitch, bool AMS)
+                        float sensor_pitch, bool AMS)
 {
   //////////////////Histos//////////////////
   TH1F *hADCCluster = // ADC content of all clusters
@@ -74,6 +74,10 @@ int clusterize_detector(int board, int side, int minADC_h, int maxADC_h, int min
   TH1F *hHighest = // ADC of highest signal
       new TH1F((TString) "hHighest_board_" + board + "_side_" + side, (TString) "hHighest_board_" + board + "_side_" + side, (maxADC_h - minADC_h) / 2, minADC_h, maxADC_h);
   hHighest->GetXaxis()->SetTitle("ADC");
+
+  TH1F *hHighestPed = // ADC of highest strip (with pedestal)
+      new TH1F((TString) "hHighestPed_board_" + board + "_side_" + side, (TString) "hHighestPed_board_" + board + "_side_" + side, (maxADC_h - minADC_h) / 2, minADC_h, maxADC_h);
+  hHighestPed->GetXaxis()->SetTitle("ADC");
 
   TH1F *hADCClusterEdge = // ADC content of all clusters
       new TH1F((TString) "hADCClusterEdge_board_" + board + "_side_" + side, (TString) "hADCClusterEdge_board_" + board + "_side_" + side, (maxADC_h - minADC_h) / 2, minADC_h, maxADC_h);
@@ -366,6 +370,8 @@ int clusterize_detector(int board, int side, int minADC_h, int maxADC_h, int min
 
     if (raw_event->size() == NChannels) // if the raw file was correctly processed these is the only possible value
     {
+      hHighestPed->Fill(*max_element(raw_event->begin()+minStrip, raw_event->begin()+maxStrip+1));
+      
       if (cal.ped.size() >= raw_event->size())
       {
         for (size_t i = 0; i != raw_event->size(); i++)
@@ -496,7 +502,7 @@ int clusterize_detector(int board, int side, int minADC_h, int maxADC_h, int min
       if (verb)
         std::cout << "Highest strip: " << *max_element(signal.begin(), signal.end()) << std::endl;
 
-      hHighest->Fill(*max_element(signal.begin(), signal.end()));
+      hHighest->Fill(*max_element(signal.begin()+minStrip, signal.begin()+maxStrip+1));
 
       // if it's BL_monster we keep only channels 320-383, 448-639, deleting the others from the vector
       if (BL_monster)
@@ -659,6 +665,10 @@ int clusterize_detector(int board, int side, int minADC_h, int maxADC_h, int min
   hHighest->Write();
   delete hHighest;
 
+  hHighestPed->Write();
+  delete hHighestPed;
+
+
  // norm = hADCClusterEdge->GetEntries();
  // hADCClusterEdge->Scale(1 / norm);
   hADCClusterEdge->Write();
@@ -794,6 +804,7 @@ int main(int argc, char *argv[])
   float sensor_pitch = 0.150;
 
   bool newDAQ = false;
+  bool twodhistos = false;
   int side = 0;
   int board = 0;
 
@@ -827,6 +838,7 @@ int main(int argc, char *argv[])
   opt->addUsage("  --min_histo_ADC  ................................. Minimun ADC value on histo axis");
   opt->addUsage("  --max_histo_ADC  ................................. Maximum ADC value on histo axis");
   opt->addUsage("  --invert         ................................. To search for negative signal peaks (prototype ADC board)");
+  opt->addUsage("  --2d             ................................. To add 2d correlation histos");
 
   opt->setFlag("help", 'h');
   opt->setFlag("symmetric", 's');
@@ -834,6 +846,7 @@ int main(int argc, char *argv[])
   opt->setFlag("verbose", 'v');
   opt->setFlag("invert");
   opt->setFlag("dynped");
+  opt->setFlag("2d");
 
   opt->setOption("version");
   opt->setOption("nevents");
@@ -939,6 +952,9 @@ int main(int argc, char *argv[])
 
   if (opt->getFlag("invert"))
     invert = true;
+
+  if(opt->getFlag("2d"))
+    twodhistos = true;
 
   if (opt->getValue("highthreshold"))
     highthreshold = atof(opt->getValue("highthreshold"));
@@ -1075,31 +1091,38 @@ int main(int argc, char *argv[])
                           sensor_pitch,
                           atoi(opt->getValue("version")) == 2023);
 
-      // Fill 2D Beam Profile Histos
-      TTreeReader j5Reader((TString)"board_" + i + "_side_0/t_clusters_board_" + i + "_side_0", foutput);
-      TTreeReaderValue<std::vector<cluster>> j5Clusters(j5Reader, "clusters");
-      TTreeReader j7Reader((TString)"board_" + i + "_side_1/t_clusters_board_" + i + "_side_1", foutput);
-      TTreeReaderValue<std::vector<cluster>> j7Clusters(j7Reader, "clusters");
-
-      while (j5Reader.Next())
+      if(twodhistos)
       {
-        j7Reader.Next();
-        for (int j = 0; j < (*j5Clusters).size(); j++)
+        // Fill 2D Beam Profile Histos
+        TTreeReader j5Reader((TString)"board_" + i + "_side_0/t_clusters_board_" + i + "_side_0", foutput);
+        TTreeReaderValue<std::vector<cluster>> j5Clusters(j5Reader, "clusters");
+        TTreeReader j7Reader((TString)"board_" + i + "_side_1/t_clusters_board_" + i + "_side_1", foutput);
+        TTreeReaderValue<std::vector<cluster>> j7Clusters(j7Reader, "clusters");
+
+        while (j5Reader.Next())
         {
-          for (int k = 0; k < (*j7Clusters).size(); k++)
+          j7Reader.Next();
+          for (int j = 0; j < (*j5Clusters).size(); j++)
           {
-            h2D_Cog[i]->Fill(GetClusterCOG((*j5Clusters)[j]), GetClusterCOG((*j7Clusters)[k]));
+            for (int k = 0; k < (*j7Clusters).size(); k++)
+            {
+              h2D_Cog[i]->Fill(GetClusterCOG((*j5Clusters)[j]), GetClusterCOG((*j7Clusters)[k]));
+            }
           }
         }
       }
+
     }
   }
 
-  // Write 2D Beam Profile Histos
-  foutput->cd();
-  for (int i = 0; i < detectors/2; i++)
+  if(twodhistos)
   {
-    h2D_Cog[i]->Write();
+    // Write 2D Beam Profile Histos
+    foutput->cd();
+    for (int i = 0; i < detectors/2; i++)
+    {
+      h2D_Cog[i]->Write();
+    }
   }
 
   foutput->Close();
