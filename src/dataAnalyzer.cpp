@@ -155,6 +155,11 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // extract run number from root file name, that is SCD_RUN00157_CAL_20241004_172252.root
+    std::string run_number_string = input_root_filename.substr(input_root_filename.find("RUN")+3, 5);
+    int run_number = std::stoi(run_number_string);
+    LogInfo << "Run number: " << run_number << std::endl;
+
     // get trees
     // TODO change at converter level, I don't like the names
     std::vector <TTree*> raw_events_trees = std::vector <TTree*>();
@@ -219,9 +224,9 @@ int main(int argc, char* argv[]) {
     g_baseline->reserve(nDetectors);
     for (int i = 0; i < nDetectors; i++) {
         TGraph *this_g_baseline = new TGraph(nChannels);
-        this_g_baseline->SetTitle(Form("Sigma (Detector %d)", i));
+        this_g_baseline->SetTitle(Form("Baseline (Detector %d)", i));
         this_g_baseline->GetXaxis()->SetTitle("Channel");
-        this_g_baseline->GetYaxis()->SetTitle("Sigma");
+        this_g_baseline->GetYaxis()->SetTitle("Baseline");
         this_g_baseline->SetMarkerStyle(20);
         this_g_baseline->SetMarkerSize(0.8);
         g_baseline->emplace_back(this_g_baseline);
@@ -355,13 +360,13 @@ int main(int argc, char* argv[]) {
 
     // create a canvas
     LogInfo << "Creating canvas" << std::endl;
-    TCanvas *c_channelsFiring = new TCanvas("c_channelsFiring", "c_channelsFiring", 800, 600);
+    TCanvas *c_channelsFiring = new TCanvas("c_channelsFiring", Form("Channels firing (Run %d)", run_number), 800, 600);
     c_channelsFiring->Divide(2, 2);
 
-    TCanvas *c_sigma = new TCanvas("c_sigma", "c_sigma", 800, 600);
+    TCanvas *c_sigma = new TCanvas("c_sigma", Form("Sigma (Run %d)", run_number), 800, 600);
     c_sigma->Divide(2, 2);
 
-    TCanvas *c_baseline = new TCanvas("c_baseline", "c_baseline", 800, 600);
+    TCanvas *c_baseline = new TCanvas("c_baseline", Form("Baseline (Run %d)", run_number), 800, 600);
     c_baseline->Divide(2, 2);
 
 
@@ -377,10 +382,10 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    TCanvas *c_amplitude = new TCanvas("c_amplitude", "c_amplitude", 800, 600);
+    TCanvas *c_amplitude = new TCanvas("c_amplitude", Form("Amplitude (Run %d)", run_number), 800, 600);
     c_amplitude->Divide(2, 2);
 
-    TCanvas *c_hitsInEvent = new TCanvas("c_hitsInEvent", "c_hitsInEvent", 800, 600);
+    TCanvas *c_hitsInEvent = new TCanvas("c_hitsInEvent", Form("Hits in event (Run %d)", run_number), 800, 600);
 
 
     LogInfo << "Drawing histograms" << std::endl;
