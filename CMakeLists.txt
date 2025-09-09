@@ -47,6 +47,16 @@ add_executable( dataAnalyzer ${CMAKE_CURRENT_SOURCE_DIR}/src/dataAnalyzer.cpp)
 target_include_directories( dataAnalyzer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
 target_link_libraries( dataAnalyzer ${OCA_LIBS} )
 
+cmessage( STATUS "Creating clustering app..." )
+add_executable( clustering ${CMAKE_CURRENT_SOURCE_DIR}/src/clustering.cpp)
+target_include_directories( clustering PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
+target_link_libraries( clustering ${OCA_LIBS} )
+
+cmessage( STATUS "Creating analyzer app..." )
+add_executable( analyzer ${CMAKE_CURRENT_SOURCE_DIR}/src/analyzer.cpp)
+target_include_directories( analyzer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
+target_link_libraries( analyzer ${OCA_LIBS} )
+
 cmessage( STATUS "Creating event_display app..." )
 add_executable( event_display ${CMAKE_CURRENT_SOURCE_DIR}/src/event_display.cpp)
 target_include_directories( event_display PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )

@@ -13,6 +13,7 @@ fileName=""
 noCompile=false
 cleanCompile=false
 nsigma=5 # Default value for nSigma
+useNewPipeline=false # default to legacy dataAnalyzer report
 
 # Function to print help message
 print_help() {
@@ -24,9 +25,10 @@ print_help() {
     echo "  -f | --first-run      first run number"
     echo "  -l | --last-run       last run number" 
     echo "  -j | --json-settings  json settings file to run this app"
-    echo "  --no-compile          do not recompile the code. Default is to recompile the code"
+  echo "  --no-compile          do not recompile the code. Default is to recompile the code"
     echo "  --clean-compile       clean and recompile the code. Default is to recompile the code without cleaning"
     echo "  --source-lxplus       source the lxplus environment. Default is to not source the lxplus environment"
+  echo "  --new-pipeline        use new clustering+analyzer pipeline (default: legacy dataAnalyzer report)"
     echo "  -h | --help           print this help message"
     echo "*****************************************************************************"
     exit 0
@@ -43,7 +45,8 @@ while [[ $# -gt 0 ]]; do
       -j|--json-settings)  settingsFile="$2"; shift 2 ;;
       --no-compile)        noCompile=true; shift ;;
       --clean-compile)     cleanCompile=true; shift ;;
-      --source-lxplus)     sourceLxplus=true; shift ;;
+  --source-lxplus)     sourceLxplus=true; shift ;;
+  --new-pipeline)      useNewPipeline=true; shift ;;
       -h|--help)           print_help ;;
       *)                   shift ;;
     esac
@@ -286,22 +289,25 @@ do
       continue
   fi
 
-  analyze_data="./dataAnalyzer -r ${outputDirectory}/${fileName}_converted.root -c ${calFileToUse} -o ${outputDirectory} -s ${nsigma} -n ${runit} -j ${settingsFile}"
-  
-  if [ "$verbose" = true ]
-  then
-      echo "Verbose mode is on."
-      analyze_data+=" -v"
+  if [ "$useNewPipeline" = true ]; then
+    # New pipeline: clustering -> analyzer
+    clusters_root="${outputDirectory}/${fileName}_clusters.root"
+    if [ -f "$clusters_root" ]; then
+      echo "Clusters file already exists: $clusters_root"
+    else
+      clustering_cmd="./clustering -r ${outputDirectory}/${fileName}_converted.root -o ${clusters_root} -s ${nsigma} -c ${calFileToUse}"
+      echo "Executing: $clustering_cmd"
+      $clustering_cmd
+    fi
+    analyzer_cmd="./analyzer -i ${clusters_root} -o ${outputDirectory}/${fileName}.pdf -r ${outputDirectory}/${fileName}_converted.root"
+    echo "Executing: $analyzer_cmd"
+    $analyzer_cmd
+  else
+    # Legacy report: run dataAnalyzer to reproduce original PDF
+    legacy_cmd="./dataAnalyzer -n ${runit} -j ${settingsFile} -r ${outputDirectory}/${fileName}_converted.root -c ${calFileToUse} -o ${outputDirectory} -s ${nsigma}"
+    echo "Executing: $legacy_cmd"
+    $legacy_cmd
   fi
-
-  if [ "$debug" = true ]
-  then
-      echo "Debug mode is on."
-      analyze_data+=" -d"
-  fi
-
-  echo "Executing command: "$analyze_data
-  $analyze_data
 
   fileName="" # reset fileName for the next iteration
  

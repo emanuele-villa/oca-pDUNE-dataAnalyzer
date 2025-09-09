@@ -125,7 +125,16 @@ int main(int argc, char *argv[])
     std::cout << "Processing file " << opt->getArgv(0) << std::endl;
 
     // Create output ROOT file
+    // Ensure output filename ends with _converted.root; if caller already provided
+    // a filename with that suffix, keep as-is. Otherwise, append before extension.
     TString output_filename = opt->getArgv(1);
+    if (!output_filename.EndsWith("_converted.root")) {
+        TString base = output_filename;
+        if (base.EndsWith(".root")) {
+            base.ReplaceAll(".root", "");
+        }
+        output_filename = base + "_converted.root";
+    }
     foutput = new TFile(output_filename.Data(), "RECREATE", "PAPERO data");
     foutput->cd();
     foutput->SetCompressionLevel(3);
@@ -426,19 +435,11 @@ int main(int argc, char *argv[])
 
         if (raw_events_tree.at(detector)->GetEntries())
         {
-            if (filled == 0)
-            {
-                raw_events_tree.at(detector)->SetName("raw_events");
-                raw_events_tree.at(detector)->SetTitle("raw_events");
-                raw_events_tree.at(detector)->Write();
-            }
-            else
-            {
-                std::string name = "raw_events_" + alphabet.substr(filled, 1);
-                raw_events_tree.at(detector)->SetName(name.c_str());
-                raw_events_tree.at(detector)->SetTitle(name.c_str());
-                raw_events_tree.at(detector)->Write();
-            }
+            // New naming scheme: sequential detector_i
+            std::string name = std::string("detector_") + std::to_string(filled);
+            raw_events_tree.at(detector)->SetName(name.c_str());
+            raw_events_tree.at(detector)->SetTitle(name.c_str());
+            raw_events_tree.at(detector)->Write();
             filled++;
         }
     }
