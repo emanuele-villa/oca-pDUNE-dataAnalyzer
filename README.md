@@ -52,6 +52,28 @@ On lxplus (recommended), all dependencies are available when sourcing the enviro
 - event_display: GUI to browse events; Prev/Next, larger UI; 3 detectors (A,B,C)
 - hits_vs_sigma: counts total hits across events for a sweep of sigma thresholds, with calibration-bad and edge channel masking; saves a PDF
 
+## Beam condition aggregation (new)
+
+Aggregate multiple converted runs into per-beam-condition ROOT files and generate reports per condition.
+
+Components:
+- beamAggregator: merges events chronologically into one file per beam setting window (from parameters/beam_settings.dat). It writes TNamed("beam_label") and outputs files like YYYYMMDD_HHMMSS_plus1GeV.root.
+- scripts/beamAna.sh: wrapper that compiles, aggregates, picks calibration, and runs dataAnalyzer on each aggregated output.
+- dataAnalyzer: detects aggregated inputs (filename not containing "SCD"); reads beam_label and uses it across all page titles and the summary header instead of "Run N". CEST timestamp parsing supports both legacy and aggregated filenames.
+
+Quick start:
+```bash
+./scripts/beamAna.sh -j json/ev-settings.json -b parameters/beam_settings.dat \
+	--inputs "converted-data/*_converted.root" \
+	--out-dir converted-data/beam-sets \
+	--n-sigma 7
+```
+
+Notes:
+- beam_settings.dat timestamps are in CEST; the aggregator applies UTC≈CEST−2h to build absolute time windows.
+- Absolute event times = UTC from the input filename + internal 20 ns ticks.
+- Reports retain all recent layout improvements: page numbers bottom-right, CEST header, 3× taller stats box on 2D plots, reordered pages, and refined legends/axes.
+
 ## Usage examples
 
 Analyze a single run by number:

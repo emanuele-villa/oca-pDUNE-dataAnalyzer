@@ -47,6 +47,12 @@ add_executable( dataAnalyzer ${CMAKE_CURRENT_SOURCE_DIR}/src/dataAnalyzer.cpp)
 target_include_directories( dataAnalyzer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
 target_link_libraries( dataAnalyzer ${OCA_LIBS} )
 
+# Beam aggregator app
+add_executable(beamAggregator
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/beamAggregator.cpp
+)
+target_link_libraries(beamAggregator ocaAnaLibs ${ROOT_LIBRARIES})
+
 cmessage( STATUS "Creating clustering app..." )
 add_executable( clustering ${CMAKE_CURRENT_SOURCE_DIR}/src/clustering.cpp)
 target_include_directories( clustering PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )

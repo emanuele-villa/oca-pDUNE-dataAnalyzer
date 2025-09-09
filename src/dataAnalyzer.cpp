@@ -208,6 +208,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // Detect aggregated input (non-SCD) and read an optional beam label
+    bool isAggregatedInput = (input_root_filename.find("SCD") == std::string::npos);
+    std::string aggregatedLabel;
+    if (isAggregatedInput) {
+        if (TNamed* lbl = (TNamed*)input_root_file->Get("beam_label")) {
+            aggregatedLabel = lbl->GetTitle();
+        } else {
+            aggregatedLabel = GetBaseName(input_root_filename);
+        }
+        LogInfo << "Aggregated input detected. Using label: " << aggregatedLabel << std::endl;
+    }
+
     // get trees with validation
     // Accept new, legacy, and hybrid combinations per detector.
     const char* newTreeNames[4]   = {"detector_0", "detector_1", "detector_2", "detector_3"};
@@ -1094,35 +1106,57 @@ int main(int argc, char* argv[]) {
             g_sigma->at(detit)->SetPoint(chit, chit, baseline_sigma.at(detit).at(chit));
             g_baseline->at(detit)->SetPoint(chit, chit, baseline.at(detit).at(chit));
         }
-        // Update graph titles with run number
-        g_sigma->at(detit)->SetTitle(Form("Sigma (Detector %d) - Run %s", detit, runNumber.c_str()));
-        g_baseline->at(detit)->SetTitle(Form("Baseline (Detector %d) - Run %s", detit, runNumber.c_str()));
+        // Update graph titles with run number or aggregated label
+        if (isAggregatedInput) {
+            g_sigma->at(detit)->SetTitle(Form("Sigma (Detector %d) - %s", detit, aggregatedLabel.c_str()));
+            g_baseline->at(detit)->SetTitle(Form("Baseline (Detector %d) - %s", detit, aggregatedLabel.c_str()));
+        } else {
+            g_sigma->at(detit)->SetTitle(Form("Sigma (Detector %d) - Run %s", detit, runNumber.c_str()));
+            g_baseline->at(detit)->SetTitle(Form("Baseline (Detector %d) - Run %s", detit, runNumber.c_str()));
+        }
     }
 
-    // Update histogram titles with run number
-    LogInfo << "Updating histogram titles with run number" << std::endl;
+    // Update histogram titles with run number or aggregated label
+    LogInfo << "Updating histogram titles with run number or aggregated label" << std::endl;
     for (int i = 0; i < nDetectors; i++) {
-        h_firingChannels->at(i)->SetTitle(Form("Firing channels (Detector %d) - Run %s", i, runNumber.c_str()));
-        h_amplitude->at(i)->SetTitle(Form("Amplitude (Detector %d) - Run %s", i, runNumber.c_str()));
-        h_amplitudeVsChannel->at(i)->SetTitle(Form("Amplitude vs Channel (Detector %d) - Run %s", i, runNumber.c_str()));
+        if (isAggregatedInput) {
+            h_firingChannels->at(i)->SetTitle(Form("Firing channels (Detector %d) - %s", i, aggregatedLabel.c_str()));
+            h_amplitude->at(i)->SetTitle(Form("Amplitude (Detector %d) - %s", i, aggregatedLabel.c_str()));
+            h_amplitudeVsChannel->at(i)->SetTitle(Form("Amplitude vs Channel (Detector %d) - %s", i, aggregatedLabel.c_str()));
+        } else {
+            h_firingChannels->at(i)->SetTitle(Form("Firing channels (Detector %d) - Run %s", i, runNumber.c_str()));
+            h_amplitude->at(i)->SetTitle(Form("Amplitude (Detector %d) - Run %s", i, runNumber.c_str()));
+            h_amplitudeVsChannel->at(i)->SetTitle(Form("Amplitude vs Channel (Detector %d) - Run %s", i, runNumber.c_str()));
+        }
         
         // Update raw peak histogram titles if in verbose mode
         if (verbose) {
             for (int j = 0; j < nChannels; j++) {
-                h_rawPeak->at(i)->at(j)->SetTitle(Form("Raw peak (Detector %d, Channel %d) - Run %s", i, j, runNumber.c_str()));
+                if (isAggregatedInput) {
+                    h_rawPeak->at(i)->at(j)->SetTitle(Form("Raw peak (Detector %d, Channel %d) - %s", i, j, aggregatedLabel.c_str()));
+                } else {
+                    h_rawPeak->at(i)->at(j)->SetTitle(Form("Raw peak (Detector %d, Channel %d) - Run %s", i, j, runNumber.c_str()));
+                }
             }
         }
     }
-    h_hitsInEvent->SetTitle(Form("Hits in event - Run %s", runNumber.c_str()));
+    if (isAggregatedInput) h_hitsInEvent->SetTitle(Form("Hits in event - %s", aggregatedLabel.c_str()));
+    else h_hitsInEvent->SetTitle(Form("Hits in event - Run %s", runNumber.c_str()));
 
     // Update canvas titles
-    TCanvas *c_channelsFiring = new TCanvas(Form("c_channelsFiring_Run%s", runNumber.c_str()), Form("Channels Firing (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_channelsFiring = nullptr;
+    if (isAggregatedInput) c_channelsFiring = new TCanvas(Form("c_channelsFiring_Run%s", runNumber.c_str()), Form("Channels Firing (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_channelsFiring = new TCanvas(Form("c_channelsFiring_Run%s", runNumber.c_str()), Form("Channels Firing (Run %s)", runNumber.c_str()), 800, 600);
     c_channelsFiring->Divide(2, 2);
 
-    TCanvas *c_sigma = new TCanvas(Form("c_sigma_Run%s", runNumber.c_str()), Form("Sigma (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_sigma = nullptr;
+    if (isAggregatedInput) c_sigma = new TCanvas(Form("c_sigma_Run%s", runNumber.c_str()), Form("Sigma (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_sigma = new TCanvas(Form("c_sigma_Run%s", runNumber.c_str()), Form("Sigma (Run %s)", runNumber.c_str()), 800, 600);
     c_sigma->Divide(2, 2);
 
-    TCanvas *c_baseline = new TCanvas(Form("c_baseline_Run%s", runNumber.c_str()), Form("Baseline (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_baseline = nullptr;
+    if (isAggregatedInput) c_baseline = new TCanvas(Form("c_baseline_Run%s", runNumber.c_str()), Form("Baseline (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_baseline = new TCanvas(Form("c_baseline_Run%s", runNumber.c_str()), Form("Baseline (Run %s)", runNumber.c_str()), 800, 600);
     c_baseline->Divide(2, 2);
 
     // Update raw peak canvas titles
@@ -1130,19 +1164,27 @@ int main(int argc, char* argv[]) {
     c_rawPeak->reserve(6);
     if (verbose) {
         for (int i = 0; i < 6; i++) {
-            TCanvas *this_c_rawPeak = new TCanvas(Form("c_rawPeak%d_Run%s", i, runNumber.c_str()), Form("Raw Peak %d (Run %s)", i, runNumber.c_str()), 800, 600);
+        TCanvas *this_c_rawPeak = nullptr;
+        if (isAggregatedInput) this_c_rawPeak = new TCanvas(Form("c_rawPeak%d_Run%s", i, runNumber.c_str()), Form("Raw Peak %d (%s)", i, aggregatedLabel.c_str()), 800, 600);
+        else this_c_rawPeak = new TCanvas(Form("c_rawPeak%d_Run%s", i, runNumber.c_str()), Form("Raw Peak %d (Run %s)", i, runNumber.c_str()), 800, 600);
             this_c_rawPeak->Divide(8, 8);
             c_rawPeak->emplace_back(this_c_rawPeak);
         }
     }
 
-    TCanvas *c_amplitude = new TCanvas(Form("c_amplitude_Run%s", runNumber.c_str()), Form("Amplitude (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_amplitude = nullptr;
+    if (isAggregatedInput) c_amplitude = new TCanvas(Form("c_amplitude_Run%s", runNumber.c_str()), Form("Amplitude (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_amplitude = new TCanvas(Form("c_amplitude_Run%s", runNumber.c_str()), Form("Amplitude (Run %s)", runNumber.c_str()), 800, 600);
     c_amplitude->Divide(2, 2);
 
-    TCanvas *c_amplitudeVsChannel = new TCanvas(Form("c_amplitudeVsChannel_Run%s", runNumber.c_str()), Form("Amplitude vs Channel (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_amplitudeVsChannel = nullptr;
+    if (isAggregatedInput) c_amplitudeVsChannel = new TCanvas(Form("c_amplitudeVsChannel_Run%s", runNumber.c_str()), Form("Amplitude vs Channel (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_amplitudeVsChannel = new TCanvas(Form("c_amplitudeVsChannel_Run%s", runNumber.c_str()), Form("Amplitude vs Channel (Run %s)", runNumber.c_str()), 800, 600);
     c_amplitudeVsChannel->Divide(2, 2);
 
-    TCanvas *c_hitsInEvent = new TCanvas(Form("c_hitsInEvent_Run%s", runNumber.c_str()), Form("Hits in Event (Run %s)", runNumber.c_str()), 800, 600);
+    TCanvas *c_hitsInEvent = nullptr;
+    if (isAggregatedInput) c_hitsInEvent = new TCanvas(Form("c_hitsInEvent_Run%s", runNumber.c_str()), Form("Hits in Event (%s)", aggregatedLabel.c_str()), 800, 600);
+    else c_hitsInEvent = new TCanvas(Form("c_hitsInEvent_Run%s", runNumber.c_str()), Form("Hits in Event (Run %s)", runNumber.c_str()), 800, 600);
 
     // --- New: 4x4 overlay pages for baseline, sigma, and amplitude-vs-channel profiles ---
     // Common styles/colors for detectors
@@ -1152,7 +1194,9 @@ int main(int argc, char* argv[]) {
     const int chunkSize = (nChannels + chunks - 1) / chunks; // ~24
 
     // Baseline: single overlay across full channel range
-    TCanvas *c_baseline_all = new TCanvas(Form("c_baseline_all_Run%s", runNumber.c_str()), Form("Baseline (all channels) - Run %s", runNumber.c_str()), 900, 600);
+    TCanvas *c_baseline_all = nullptr;
+    if (isAggregatedInput) c_baseline_all = new TCanvas(Form("c_baseline_all_Run%s", runNumber.c_str()), Form("Baseline (all channels) - %s", aggregatedLabel.c_str()), 900, 600);
+    else c_baseline_all = new TCanvas(Form("c_baseline_all_Run%s", runNumber.c_str()), Form("Baseline (all channels) - Run %s", runNumber.c_str()), 900, 600);
     c_baseline_all->cd();
     {
         // Auto y-range from all detectors
@@ -1160,7 +1204,9 @@ int main(int argc, char* argv[]) {
         for (int d=0; d<4; ++d) { for (int ch=0; ch<nChannels; ++ch) { double v = baseline.at(d).at(ch); if (v<yMin) yMin=v; if (v>yMax) yMax=v; } }
         if (!(yMax>yMin)) { yMin=0; yMax=1; }
         double pad = 0.05*(yMax-yMin+1e-6);
-        TH1F *frame = new TH1F("frame_base_all", Form("Baseline vs channel - Run %s;Channel;Baseline", runNumber.c_str()), nChannels, 0, nChannels);
+    TH1F *frame = nullptr;
+    if (isAggregatedInput) frame = new TH1F("frame_base_all", Form("Baseline vs channel - %s;Channel;Baseline", aggregatedLabel.c_str()), nChannels, 0, nChannels);
+    else frame = new TH1F("frame_base_all", Form("Baseline vs channel - Run %s;Channel;Baseline", runNumber.c_str()), nChannels, 0, nChannels);
         frame->SetStats(0);
         frame->GetYaxis()->SetRangeUser(yMin-pad, yMax+pad);
         frame->Draw();
@@ -1172,14 +1218,18 @@ int main(int argc, char* argv[]) {
     // Baseline 4x4 overlay removed per request
 
     // Sigma: single overlay across full channel range
-    TCanvas *c_sigma_all = new TCanvas(Form("c_sigma_all_Run%s", runNumber.c_str()), Form("Sigma (all channels) - Run %s", runNumber.c_str()), 900, 600);
+    TCanvas *c_sigma_all = nullptr;
+    if (isAggregatedInput) c_sigma_all = new TCanvas(Form("c_sigma_all_Run%s", runNumber.c_str()), Form("Sigma (all channels) - %s", aggregatedLabel.c_str()), 900, 600);
+    else c_sigma_all = new TCanvas(Form("c_sigma_all_Run%s", runNumber.c_str()), Form("Sigma (all channels) - Run %s", runNumber.c_str()), 900, 600);
     c_sigma_all->cd();
     {
         double yMin = 1e300, yMax = -1e300;
         for (int d=0; d<4; ++d) { for (int ch=0; ch<nChannels; ++ch) { double v = baseline_sigma.at(d).at(ch); if (v<yMin) yMin=v; if (v>yMax) yMax=v; } }
         if (!(yMax>yMin)) { yMin=0; yMax=1; }
         double pad = 0.05*(yMax-yMin+1e-6);
-        TH1F *frame = new TH1F("frame_sigma_all", Form("Sigma vs channel - Run %s;Channel;Sigma", runNumber.c_str()), nChannels, 0, nChannels);
+    TH1F *frame = nullptr;
+    if (isAggregatedInput) frame = new TH1F("frame_sigma_all", Form("Sigma vs channel - %s;Channel;Sigma", aggregatedLabel.c_str()), nChannels, 0, nChannels);
+    else frame = new TH1F("frame_sigma_all", Form("Sigma vs channel - Run %s;Channel;Sigma", runNumber.c_str()), nChannels, 0, nChannels);
         frame->SetStats(0);
         frame->GetYaxis()->SetRangeUser(yMin-pad, yMax+pad);
         frame->Draw();
@@ -1197,14 +1247,18 @@ int main(int argc, char* argv[]) {
         if (profAmp[d]) { profAmp[d]->SetLineColor(detColors[d]); profAmp[d]->SetMarkerColor(detColors[d]); profAmp[d]->SetMarkerStyle(detMarkers[d]); profAmp[d]->SetMarkerSize(0.6); profAmp[d]->SetLineWidth(2); }
     }
     // Amplitude: single overlay of mean amplitude per channel across full range
-    TCanvas *c_ampl_all = new TCanvas(Form("c_amp_all_Run%s", runNumber.c_str()), Form("Mean amplitude (all channels) - Run %s", runNumber.c_str()), 900, 600);
+    TCanvas *c_ampl_all = nullptr;
+    if (isAggregatedInput) c_ampl_all = new TCanvas(Form("c_amp_all_Run%s", runNumber.c_str()), Form("Mean amplitude (all channels) - %s", aggregatedLabel.c_str()), 900, 600);
+    else c_ampl_all = new TCanvas(Form("c_amp_all_Run%s", runNumber.c_str()), Form("Mean amplitude (all channels) - Run %s", runNumber.c_str()), 900, 600);
     c_ampl_all->cd();
     {
         double yMin = 1e300, yMax = -1e300;
         for (int d=0; d<4; ++d) if (profAmp[d]) { for (int ch=1; ch<=nChannels; ++ch) { double v = profAmp[d]->GetBinContent(ch); if (v==0) continue; if (v<yMin) yMin=v; if (v>yMax) yMax=v; } }
         if (!(yMax>yMin)) { yMin=0; yMax=1; }
         double pad = 0.10*(yMax-yMin+1e-6);
-        TH1F *frame = new TH1F("frame_amp_all", Form("Mean amplitude vs channel - Run %s;Channel;Mean amplitude", runNumber.c_str()), nChannels, 0, nChannels);
+    TH1F *frame = nullptr;
+    if (isAggregatedInput) frame = new TH1F("frame_amp_all", Form("Mean amplitude vs channel - %s;Channel;Mean amplitude", aggregatedLabel.c_str()), nChannels, 0, nChannels);
+    else frame = new TH1F("frame_amp_all", Form("Mean amplitude vs channel - Run %s;Channel;Mean amplitude", runNumber.c_str()), nChannels, 0, nChannels);
         frame->SetStats(0);
         frame->GetYaxis()->SetRangeUser(yMin-pad, yMax+pad);
         frame->Draw();
@@ -1213,7 +1267,9 @@ int main(int argc, char* argv[]) {
         leg->Draw();
     }
 
-    TCanvas *c_ampl_4x4 = new TCanvas(Form("c_amp4x4_Run%s", runNumber.c_str()), Form("Amplitude mean (4x4 slices) - Run %s", runNumber.c_str()), 1200, 900);
+    TCanvas *c_ampl_4x4 = nullptr;
+    if (isAggregatedInput) c_ampl_4x4 = new TCanvas(Form("c_amp4x4_Run%s", runNumber.c_str()), Form("Amplitude mean (4x4 slices) - %s", aggregatedLabel.c_str()), 1200, 900);
+    else c_ampl_4x4 = new TCanvas(Form("c_amp4x4_Run%s", runNumber.c_str()), Form("Amplitude mean (4x4 slices) - Run %s", runNumber.c_str()), 1200, 900);
     c_ampl_4x4->Divide(4,4);
     for (int chIt=0; chIt<chunks; ++chIt) {
         int s = chIt * chunkSize;
@@ -1232,7 +1288,9 @@ int main(int argc, char* argv[]) {
         }
         if (!(yMax > yMin)) { yMin = 0; yMax = 1; }
         double pad = 0.10 * (yMax - yMin + 1e-6);
-        TH1F *frame = new TH1F(Form("frame_amp_%d", chIt), Form("Mean amplitude ch [%d,%d) - Run %s;Channel;Mean amplitude", s, e-1, runNumber.c_str()), e-s, s, e);
+    TH1F *frame = nullptr;
+    if (isAggregatedInput) frame = new TH1F(Form("frame_amp_%d", chIt), Form("Mean amplitude ch [%d,%d) - %s;Channel;Mean amplitude", s, e-1, aggregatedLabel.c_str()), e-s, s, e);
+    else frame = new TH1F(Form("frame_amp_%d", chIt), Form("Mean amplitude ch [%d,%d) - Run %s;Channel;Mean amplitude", s, e-1, runNumber.c_str()), e-s, s, e);
         frame->SetStats(0);
         frame->GetYaxis()->SetRangeUser(yMin - pad, yMax + pad);
         frame->Draw();
@@ -1249,9 +1307,15 @@ int main(int argc, char* argv[]) {
         double maxDt = *std::max_element(evtDeltaTimesSec.begin(), evtDeltaTimesSec.end());
         if (maxDt <= 0) maxDt = 1.0;
     int nbins = 200;
-    h_evtDeltaT = new TH1F(Form("h_evtDeltaT_%s", runNumber.c_str()), Form("Delta between consecutive events (Run %s);#Delta t [s];Entries", runNumber.c_str()), nbins, 0.0, 0.5);
+    if (isAggregatedInput)
+        h_evtDeltaT = new TH1F(Form("h_evtDeltaT_%s", runNumber.c_str()), Form("Delta between consecutive events (%s);#Delta t [s];Entries", aggregatedLabel.c_str()), nbins, 0.0, 0.5);
+    else
+        h_evtDeltaT = new TH1F(Form("h_evtDeltaT_%s", runNumber.c_str()), Form("Delta between consecutive events (Run %s);#Delta t [s];Entries", runNumber.c_str()), nbins, 0.0, 0.5);
         for (double v : evtDeltaTimesSec) h_evtDeltaT->Fill(v);
-        c_evtDeltaT = new TCanvas(Form("c_evtDeltaT_Run%s", runNumber.c_str()), Form("Event #Delta t (Run %s)", runNumber.c_str()), 800, 600);
+        if (isAggregatedInput)
+            c_evtDeltaT = new TCanvas(Form("c_evtDeltaT_Run%s", runNumber.c_str()), Form("Event #Delta t (%s)", aggregatedLabel.c_str()), 800, 600);
+        else
+            c_evtDeltaT = new TCanvas(Form("c_evtDeltaT_Run%s", runNumber.c_str()), Form("Event #Delta t (Run %s)", runNumber.c_str()), 800, 600);
         c_evtDeltaT->cd(); h_evtDeltaT->Draw(); c_evtDeltaT->Update();
     }
     // Requested: remove the "gap between 10s spills" plot entirely
@@ -1270,8 +1334,24 @@ int main(int argc, char* argv[]) {
         // Parse start time from input_root_filename (add +2h for CEST) to embed in titles
     auto buildSinceLabel = [&](const std::string &fname)->std::string{
             std::string base = fname.substr(fname.find_last_of("/\\") + 1);
-            size_t posTime = base.rfind('_');
             auto isAllDigits = [](const std::string &s){ return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit); };
+            auto adjustCEST = [&](int &year,int &month,int &day,int &hour){
+                auto isLeap = [](int y){ return (y%4==0 && y%100!=0) || (y%400==0); };
+                auto daysInMonth = [&](int y,int m){ static int d[12]={31,28,31,30,31,30,31,31,30,31,30,31}; return m==2 ? (isLeap(y)?29:28) : d[m-1]; };
+                hour += 2; if (hour >= 24) { hour -= 24; day += 1; int dim = daysInMonth(year,month); if (day>dim){ day=1; month+=1; if (month>12){ month=1; year+=1; } } }
+            };
+            // Case 1: Aggregated files like YYYYMMDD_HHMMSS_*
+            if (base.size() >= 16 && isAllDigits(base.substr(0,8)) && base[8]=='_' && isAllDigits(base.substr(9,6))) {
+                int year = std::stoi(base.substr(0,4));
+                int month = std::stoi(base.substr(4,2));
+                int day = std::stoi(base.substr(6,2));
+                int hour = std::stoi(base.substr(9,2));
+                int minute = std::stoi(base.substr(11,2));
+                adjustCEST(year,month,day,hour);
+                return std::string(Form("since %04d-%02d-%02d %02d:%02d CEST", year, month, day, hour, minute));
+            }
+            // Case 2: Legacy SCD_RUNxxx_BEAM_YYYYMMDD_HHMMSS
+            size_t posTime = base.rfind('_');
             if (posTime != std::string::npos && posTime+1 < base.size()) {
                 std::string timeTok = base.substr(posTime+1); // HHMMSS(.root)
                 size_t dot = timeTok.find('.'); if (dot != std::string::npos) timeTok = timeTok.substr(0,dot);
@@ -1285,14 +1365,12 @@ int main(int argc, char* argv[]) {
                         int day = std::stoi(dateTok.substr(6,2));
                         int hour = std::stoi(timeTok.substr(0,2));
                         int minute = std::stoi(timeTok.substr(2,2));
-                        auto isLeap = [](int y){ return (y%4==0 && y%100!=0) || (y%400==0); };
-                        auto daysInMonth = [&](int y,int m){ static int d[12]={31,28,31,30,31,30,31,31,30,31,30,31}; return m==2 ? (isLeap(y)?29:28) : d[m-1]; };
-                        hour += 2; if (hour >= 24) { hour -= 24; day += 1; int dim = daysInMonth(year,month); if (day>dim){ day=1; month+=1; if (month>12){ month=1; year+=1; } } }
+                        adjustCEST(year,month,day,hour);
                         return std::string(Form("since %04d-%02d-%02d %02d:%02d CEST", year, month, day, hour, minute));
                     }
                 }
             }
-            // Avoid generic 'start' per request; fallback to a generic CEST label
+            // Fallback
             return std::string("since unknown CEST");
         };
         std::string sinceLabel = buildSinceLabel(input_root_filename);
@@ -1311,7 +1389,10 @@ int main(int argc, char* argv[]) {
                 g_evtVsTime = new TGraph();
                 g_evtVsTime->SetName("g_timeVsTriggerNumber");
                 // Time since start on X; concise title includes run number
-                g_evtVsTime->SetTitle(Form("Time since beginning of run, internal timestamp - Run %s", runNumber.c_str()));
+                if (isAggregatedInput)
+                    g_evtVsTime->SetTitle(Form("Time since beginning, internal timestamp - %s", aggregatedLabel.c_str()));
+                else
+                    g_evtVsTime->SetTitle(Form("Time since beginning of run, internal timestamp - Run %s", runNumber.c_str()));
                 g_evtVsTime->GetXaxis()->SetTitle("Internal time [min]");
                 g_evtVsTime->GetYaxis()->SetTitle("Trigger Number");
                 g_evtVsTime->SetMarkerStyle(20);
@@ -1328,7 +1409,10 @@ int main(int argc, char* argv[]) {
                     // Inverted: X=Time[min], Y=Trigger
                     g_evtVsTime->SetPoint(g_evtVsTime->GetN(), dtMin, xTrig);
                 }
-                c_evtVsTime = new TCanvas(Form("c_timeVsTriggerNumber_Run%s", runNumber.c_str()), Form("Timestamp vs Trigger Number (Run %s)", runNumber.c_str()), 800, 600);
+                if (isAggregatedInput)
+                    c_evtVsTime = new TCanvas(Form("c_timeVsTriggerNumber_Run%s", runNumber.c_str()), Form("Timestamp vs Trigger Number (%s)", aggregatedLabel.c_str()), 800, 600);
+                else
+                    c_evtVsTime = new TCanvas(Form("c_timeVsTriggerNumber_Run%s", runNumber.c_str()), Form("Timestamp vs Trigger Number (Run %s)", runNumber.c_str()), 800, 600);
                 c_evtVsTime->cd();
                 g_evtVsTime->Draw("AP");
                 if (timeMax > timeMin) {
@@ -1349,7 +1433,13 @@ int main(int argc, char* argv[]) {
                 g_extEvtVsTime = new TGraph();
                 g_extEvtVsTime->SetName("g_extTimeVsTriggerNumber");
                 // Time since start on X; concise title includes run number
-                g_extEvtVsTime->SetTitle(Form("Time since beginning of run, external timestamp - Run %s", runNumber.c_str()));
+                if (isAggregatedInput)
+                    g_extEvtVsTime->SetTitle(Form("Time since beginning, external timestamp - %s", aggregatedLabel.c_str()));
+                else
+                    if (isAggregatedInput)
+                        g_extEvtVsTime->SetTitle(Form("Time since beginning, external timestamp - %s", aggregatedLabel.c_str()));
+                    else
+                        g_extEvtVsTime->SetTitle(Form("Time since beginning of run, external timestamp - Run %s", runNumber.c_str()));
                 g_extEvtVsTime->GetXaxis()->SetTitle("External time [min]");
                 g_extEvtVsTime->GetYaxis()->SetTitle("Trigger Number");
                 g_extEvtVsTime->SetMarkerStyle(20);
@@ -1366,7 +1456,10 @@ int main(int argc, char* argv[]) {
                     // Inverted: X=External Time[min], Y=Trigger
                     g_extEvtVsTime->SetPoint(g_extEvtVsTime->GetN(), dtMin, xTrig);
                 }
-                c_extEvtVsTime = new TCanvas(Form("c_extTimeVsTriggerNumber_Run%s", runNumber.c_str()), Form("External timestamp vs Trigger Number (Run %s)", runNumber.c_str()), 800, 600);
+                if (isAggregatedInput)
+                    c_extEvtVsTime = new TCanvas(Form("c_extTimeVsTriggerNumber_Run%s", runNumber.c_str()), Form("External timestamp vs Trigger Number (%s)", aggregatedLabel.c_str()), 800, 600);
+                else
+                    c_extEvtVsTime = new TCanvas(Form("c_extTimeVsTriggerNumber_Run%s", runNumber.c_str()), Form("External timestamp vs Trigger Number (Run %s)", runNumber.c_str()), 800, 600);
                 c_extEvtVsTime->cd();
                 g_extEvtVsTime->Draw("AP");
                 if (extTimeMax > extTimeMin) {
@@ -1384,7 +1477,13 @@ int main(int argc, char* argv[]) {
                 Long64_t nToRead = std::min<Long64_t>(nEvt, limit);
                 g_extVsIntTime = new TGraph();
                 g_extVsIntTime->SetName("g_extVsIntTime");
-                g_extVsIntTime->SetTitle(Form("Internal vs external timestamps (in ticks) - Run %s;Internal time [min];External time [min]", runNumber.c_str()));
+                if (isAggregatedInput)
+                    g_extVsIntTime->SetTitle(Form("Internal vs external timestamps (in ticks) - %s;Internal time [min];External time [min]", aggregatedLabel.c_str()));
+                else
+                    if (isAggregatedInput)
+                        g_extVsIntTime->SetTitle(Form("Internal vs external timestamps (in ticks) - %s;Internal time [min];External time [min]", aggregatedLabel.c_str()));
+                    else
+                        g_extVsIntTime->SetTitle(Form("Internal vs external timestamps (in ticks) - Run %s;Internal time [min];External time [min]", runNumber.c_str()));
                 g_extVsIntTime->SetMarkerStyle(20);
                 g_extVsIntTime->SetMarkerSize(0.6);
                 Long64_t t0 = 0, ext0 = 0; bool t0set = false, ext0set = false;
@@ -1404,7 +1503,10 @@ int main(int argc, char* argv[]) {
                     }
                     g_extVsIntTime->SetPoint(g_extVsIntTime->GetN(), xMin, yMin);
                 }
-                c_extVsIntTime = new TCanvas(Form("c_extVsIntTime_Run%s", runNumber.c_str()), Form("External vs Internal time since start (Run %s)", runNumber.c_str()), 800, 600);
+                if (isAggregatedInput)
+                    c_extVsIntTime = new TCanvas(Form("c_extVsIntTime_Run%s", runNumber.c_str()), Form("External vs Internal time since start (%s)", aggregatedLabel.c_str()), 800, 600);
+                else
+                    c_extVsIntTime = new TCanvas(Form("c_extVsIntTime_Run%s", runNumber.c_str()), Form("External vs Internal time since start (Run %s)", runNumber.c_str()), 800, 600);
                 c_extVsIntTime->cd();
                 g_extVsIntTime->Draw("AP");
                 // Set sensible axis ranges
@@ -1444,12 +1546,13 @@ int main(int argc, char* argv[]) {
     {
     double pTrig3 = (triggeredEvents > 0) ? (100.0 * (double)selected3Count / (double)triggeredEvents) : 0.0;
     double pTot3  = (limit > 0) ? (100.0 * (double)selected3Count / (double)limit) : 0.0;
-    std::string title3 = Form("Tracking (1 cluster/Det) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;",
-                   pTrig3, pTot3, runNumber.c_str());
+    std::string title3 = isAggregatedInput
+                   ? Form("Tracking (1 cluster/Det) [%.1f%% of events with hits, %.1f%% of all events] - %s;", pTrig3, pTot3, aggregatedLabel.c_str())
+                   : Form("Tracking (1 cluster/Det) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;", pTrig3, pTot3, runNumber.c_str());
         h_recoCenter_3->SetTitle(title3.c_str());
 
     // Build canvas with main pad + bottom (ProjectionX) + left (ProjectionY)
-    TCanvas *c = new TCanvas("c_recoCenter_3", Form("Exactly 3 (Run %s)", runNumber.c_str()), 980, 820);
+    TCanvas *c = new TCanvas("c_recoCenter_3", isAggregatedInput? Form("Exactly 3 (%s)", aggregatedLabel.c_str()) : Form("Exactly 3 (Run %s)", runNumber.c_str()), 980, 820);
     // Pads: left (0,0.2)-(0.2,1), bottom (0.2,0)-(1,0.2), main (0.2,0.2)-(1,1)
     TPad *padLeft3   = new TPad("padLeft3",   "padLeft3",   0.0, 0.2, 0.2, 1.0);
     TPad *padBottom3 = new TPad("padBottom3", "padBottom3", 0.2, 0.0, 1.0, 0.2);
@@ -1548,11 +1651,12 @@ int main(int argc, char* argv[]) {
     {
     double pTrig23 = (triggeredEvents > 0) ? (100.0 * (double)selected2to3Count / (double)triggeredEvents) : 0.0;
     double pTot23  = (limit > 0) ? (100.0 * (double)selected2to3Count / (double)limit) : 0.0;
-    std::string title23 = Form("Tracking (2/3 clusters, 1/detector) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]",
-                    pTrig23, pTot23, runNumber.c_str());
+    std::string title23 = isAggregatedInput
+                    ? Form("Tracking (2/3 clusters, 1/detector) [%.1f%% of events with hits, %.1f%% of all events] - %s;X [mm];Y [mm]", pTrig23, pTot23, aggregatedLabel.c_str())
+                    : Form("Tracking (2/3 clusters, 1/detector) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]", pTrig23, pTot23, runNumber.c_str());
         h_recoCenter_2to3->SetTitle(title23.c_str());
 
-    TCanvas *c = new TCanvas("c_recoCenter_2to3", Form("2 or 3 (Run %s)", runNumber.c_str()), 980, 820);
+    TCanvas *c = new TCanvas("c_recoCenter_2to3", isAggregatedInput? Form("2 or 3 (%s)", aggregatedLabel.c_str()) : Form("2 or 3 (Run %s)", runNumber.c_str()), 980, 820);
     TPad *padLeft23   = new TPad("padLeft23",   "padLeft23",   0.0, 0.2, 0.2, 1.0);
     TPad *padBottom23 = new TPad("padBottom23", "padBottom23", 0.2, 0.0, 1.0, 0.2);
     TPad *padMain23   = new TPad("padMain23",   "padMain23",   0.2, 0.2, 1.0, 1.0);
@@ -1645,8 +1749,9 @@ int main(int argc, char* argv[]) {
     {
     double pTrig3 = (triggeredEvents > 0) ? (100.0 * (double)selected3Count / (double)triggeredEvents) : 0.0;
     double pTot3  = (limit > 0) ? (100.0 * (double)selected3Count / (double)limit) : 0.0;
-    std::string ttl3 = Form("Clusters (3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]",
-                 pTrig3, pTot3, runNumber.c_str());
+    std::string ttl3 = isAggregatedInput
+                 ? Form("Clusters (3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - %s;X [mm];Y [mm]", pTrig3, pTot3, aggregatedLabel.c_str())
+                 : Form("Clusters (3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]", pTrig3, pTot3, runNumber.c_str());
         TH2F *frame3 = new TH2F("frame3", ttl3.c_str(), 10, centersXmin, centersXmax, 10, centersYmin, centersYmax);
         frame3->SetStats(0);
         frame3->Draw();
@@ -1669,8 +1774,9 @@ int main(int argc, char* argv[]) {
     {
     double pTrig23 = (triggeredEvents > 0) ? (100.0 * (double)selected2to3Count / (double)triggeredEvents) : 0.0;
     double pTot23  = (limit > 0) ? (100.0 * (double)selected2to3Count / (double)limit) : 0.0;
-    std::string ttl23 = Form("Clusters (2 or 3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]",
-                 pTrig23, pTot23, runNumber.c_str());
+    std::string ttl23 = isAggregatedInput
+                 ? Form("Clusters (2 or 3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - %s;X [mm];Y [mm]", pTrig23, pTot23, aggregatedLabel.c_str())
+                 : Form("Clusters (2 or 3 detectors) [%.1f%% of events with hits, %.1f%% of all events] - Run %s;X [mm];Y [mm]", pTrig23, pTot23, runNumber.c_str());
         TH2F *frame23 = new TH2F("frame23", ttl23.c_str(), 10, centersXmin, centersXmax, 10, centersYmin, centersYmax);
         frame23->SetStats(0);
         frame23->Draw();
@@ -1784,7 +1890,11 @@ int main(int argc, char* argv[]) {
         
         LogInfo << "Creating multi-page PDF report..." << std::endl;
         // Page 1: Summary page with general run information
-        TCanvas *c_summary = new TCanvas(Form("c_summary_Run%s", runNumber.c_str()), Form("Run %s Summary", runNumber.c_str()), 800, 600);
+        TCanvas *c_summary = nullptr;
+        if (isAggregatedInput)
+            c_summary = new TCanvas(Form("c_summary_Run%s", runNumber.c_str()), Form("%s Summary", aggregatedLabel.c_str()), 800, 600);
+        else
+            c_summary = new TCanvas(Form("c_summary_Run%s", runNumber.c_str()), Form("Run %s Summary", runNumber.c_str()), 800, 600);
         c_summary->cd();
     TLatex lat;
     lat.SetNDC(true);
@@ -1798,32 +1908,48 @@ int main(int argc, char* argv[]) {
     lat.SetTextAlign(11); // back to left-aligned
     lat.SetTextSize(0.030);
     // Header: include CEST date/time (+2h) parsed from file name
-        std::string cestHeader = "";
+    std::string cestHeader = "";
         {
             auto isAllDigits = [](const std::string &s){ return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit); };
             std::string base = input_file_base; // e.g., SCD_RUN00488_BEAM_20250901_175435
-            size_t posTime = base.rfind('_');
-            if (posTime != std::string::npos && posTime+1 < base.size()) {
-                std::string timeTok = base.substr(posTime+1); // HHMMSS
-                std::string beforeTime = base.substr(0, posTime);
-                size_t posDate = beforeTime.rfind('_');
-                if (posDate != std::string::npos && posDate+1 < beforeTime.size()) {
-                    std::string dateTok = beforeTime.substr(posDate+1); // YYYYMMDD
-                    if (dateTok.size()==8 && timeTok.size()>=4 && isAllDigits(dateTok) && isAllDigits(timeTok)) {
-                        int year = std::stoi(dateTok.substr(0,4));
-                        int month = std::stoi(dateTok.substr(4,2));
-                        int day = std::stoi(dateTok.substr(6,2));
-                        int hour = std::stoi(timeTok.substr(0,2));
-                        int minute = std::stoi(timeTok.substr(2,2));
-                        auto isLeap = [](int y){ return (y%4==0 && y%100!=0) || (y%400==0); };
-                        auto daysInMonth = [&](int y,int m){ static int d[12]={31,28,31,30,31,30,31,31,30,31,30,31}; return m==2 ? (isLeap(y)?29:28) : d[m-1]; };
-                        hour += 2; if (hour >= 24) { hour -= 24; day += 1; int dim = daysInMonth(year,month); if (day>dim){ day=1; month+=1; if (month>12){ month=1; year+=1; } } }
-                        cestHeader = std::string(Form("Run %s summary - Started %04d-%02d-%02d %02d:%02d CEST", runNumber.c_str(), year, month, day, hour, minute));
+            // Aggregated filename starts with YYYYMMDD_HHMMSS_...
+            if (base.size() >= 16 && isAllDigits(base.substr(0,8)) && base[8]=='_' && isAllDigits(base.substr(9,6))) {
+                int year = std::stoi(base.substr(0,4));
+                int month = std::stoi(base.substr(4,2));
+                int day = std::stoi(base.substr(6,2));
+                int hour = std::stoi(base.substr(9,2));
+                int minute = std::stoi(base.substr(11,2));
+                auto isLeap = [](int y){ return (y%4==0 && y%100!=0) || (y%400==0); };
+                auto daysInMonth = [&](int y,int m){ static int d[12]={31,28,31,30,31,30,31,31,30,31,30,31}; return m==2 ? (isLeap(y)?29:28) : d[m-1]; };
+                hour += 2; if (hour >= 24) { hour -= 24; day += 1; int dim = daysInMonth(year,month); if (day>dim){ day=1; month+=1; if (month>12){ month=1; year+=1; } } }
+                cestHeader = std::string(Form("%s summary - Started %04d-%02d-%02d %02d:%02d CEST", (isAggregatedInput? aggregatedLabel.c_str() : runNumber.c_str()), year, month, day, hour, minute));
+            } else {
+                size_t posTime = base.rfind('_');
+                if (posTime != std::string::npos && posTime+1 < base.size()) {
+                    std::string timeTok = base.substr(posTime+1); // HHMMSS
+                    std::string beforeTime = base.substr(0, posTime);
+                    size_t posDate = beforeTime.rfind('_');
+                    if (posDate != std::string::npos && posDate+1 < beforeTime.size()) {
+                        std::string dateTok = beforeTime.substr(posDate+1); // YYYYMMDD
+                        if (dateTok.size()==8 && timeTok.size()>=4 && isAllDigits(dateTok) && isAllDigits(timeTok)) {
+                            int year = std::stoi(dateTok.substr(0,4));
+                            int month = std::stoi(dateTok.substr(4,2));
+                            int day = std::stoi(dateTok.substr(6,2));
+                            int hour = std::stoi(timeTok.substr(0,2));
+                            int minute = std::stoi(timeTok.substr(2,2));
+                            auto isLeap = [](int y){ return (y%4==0 && y%100!=0) || (y%400==0); };
+                            auto daysInMonth = [&](int y,int m){ static int d[12]={31,28,31,30,31,30,31,31,30,31,30,31}; return m==2 ? (isLeap(y)?29:28) : d[m-1]; };
+                            hour += 2; if (hour >= 24) { hour -= 24; day += 1; int dim = daysInMonth(year,month); if (day>dim){ day=1; month+=1; if (month>12){ month=1; year+=1; } } }
+                            if (isAggregatedInput)
+                                cestHeader = std::string(Form("%s summary - Started %04d-%02d-%02d %02d:%02d CEST", aggregatedLabel.c_str(), year, month, day, hour, minute));
+                            else
+                                cestHeader = std::string(Form("Run %s summary - Started %04d-%02d-%02d %02d:%02d CEST", runNumber.c_str(), year, month, day, hour, minute));
+                        }
                     }
                 }
             }
         }
-    if (cestHeader.empty()) cestHeader = Form("Run %s summary", runNumber.c_str());
+    if (cestHeader.empty()) cestHeader = isAggregatedInput ? aggregatedLabel + " summary" : Form("Run %s summary", runNumber.c_str());
     lat.DrawLatex(0.10, yTop, cestHeader.c_str()); yTop -= dyHead;
     // Add date and time in CEST right after the title
     auto isAllDigits = [](const std::string &s){ return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit); };
@@ -1934,7 +2060,9 @@ int main(int argc, char* argv[]) {
 
         // Page 6: Clusters per event (per detector)
         {
-            TCanvas *c_clustersPerEvent = new TCanvas(Form("c_clustersPerEvent_Run%s", runNumber.c_str()), Form("Clusters per event (Run %s)", runNumber.c_str()), 800, 600);
+            TCanvas *c_clustersPerEvent = nullptr;
+            if (isAggregatedInput) c_clustersPerEvent = new TCanvas(Form("c_clustersPerEvent_Run%s", runNumber.c_str()), Form("Clusters per event (%s)", aggregatedLabel.c_str()), 800, 600);
+            else c_clustersPerEvent = new TCanvas(Form("c_clustersPerEvent_Run%s", runNumber.c_str()), Form("Clusters per event (Run %s)", runNumber.c_str()), 800, 600);
             c_clustersPerEvent->Divide(2, 2);
             // Add page number
             c_clustersPerEvent->cd();
@@ -1945,7 +2073,8 @@ int main(int argc, char* argv[]) {
                 // Linear scale as requested
                 gPad->SetLogy(0);
                 // Update titles with run number at draw time for clarity
-                h_clustersPerEvent[d]->SetTitle(Form("Clusters per event - D%d (Run %s);Clusters;Events", d, runNumber.c_str()));
+                if (isAggregatedInput) h_clustersPerEvent[d]->SetTitle(Form("Clusters per event - D%d (%s);Clusters;Events", d, aggregatedLabel.c_str()));
+                else h_clustersPerEvent[d]->SetTitle(Form("Clusters per event - D%d (Run %s);Clusters;Events", d, runNumber.c_str()));
                 // Limit x-axis to maximum 6 clusters
                 h_clustersPerEvent[d]->GetXaxis()->SetRangeUser(0, 6);
                 // Leave some headroom for labels
@@ -1971,7 +2100,9 @@ int main(int argc, char* argv[]) {
 
         // Page 7: Timestamp plots arranged on a 2x2 page
         {
-            TCanvas *c_time2x2 = new TCanvas(Form("c_time2x2_Run%s", runNumber.c_str()), Form("Timestamps - Run %s", runNumber.c_str()), 1200, 900);
+            TCanvas *c_time2x2 = nullptr;
+            if (isAggregatedInput) c_time2x2 = new TCanvas(Form("c_time2x2_Run%s", runNumber.c_str()), Form("Timestamps - %s", aggregatedLabel.c_str()), 1200, 900);
+            else c_time2x2 = new TCanvas(Form("c_time2x2_Run%s", runNumber.c_str()), Form("Timestamps - Run %s", runNumber.c_str()), 1200, 900);
             c_time2x2->Divide(2,2);
             // Add page number
             c_time2x2->cd();
@@ -2010,7 +2141,9 @@ int main(int argc, char* argv[]) {
 
         // Page 8: Baseline and Sigma vs channel (2,1 canvas)
         {
-            TCanvas *c_baseline_sigma = new TCanvas(Form("c_baseline_sigma_Run%s", runNumber.c_str()), Form("Baseline and Sigma - Run %s", runNumber.c_str()), 900, 800);
+            TCanvas *c_baseline_sigma = nullptr;
+            if (isAggregatedInput) c_baseline_sigma = new TCanvas(Form("c_baseline_sigma_Run%s", runNumber.c_str()), Form("Baseline and Sigma - %s", aggregatedLabel.c_str()), 900, 800);
+            else c_baseline_sigma = new TCanvas(Form("c_baseline_sigma_Run%s", runNumber.c_str()), Form("Baseline and Sigma - Run %s", runNumber.c_str()), 900, 800);
             c_baseline_sigma->Divide(1, 2);
             // Add page number
             c_baseline_sigma->cd();
@@ -2025,7 +2158,9 @@ int main(int argc, char* argv[]) {
                 for (int d=0; d<4; ++d) { for (int ch=0; ch<nChannels; ++ch) { double v = baseline.at(d).at(ch); if (v<yMin) yMin=v; if (v>yMax) yMax=v; } }
                 if (!(yMax>yMin)) { yMin=0; yMax=1; }
                 double pad = 0.05*(yMax-yMin+1e-6);
-                TH1F *frame_base = new TH1F("frame_base_p7", Form("Baseline vs channel - Run %s;Channel;Baseline", runNumber.c_str()), nChannels, 0, nChannels);
+                TH1F *frame_base = nullptr;
+                if (isAggregatedInput) frame_base = new TH1F("frame_base_p7", Form("Baseline vs channel - %s;Channel;Baseline", aggregatedLabel.c_str()), nChannels, 0, nChannels);
+                else frame_base = new TH1F("frame_base_p7", Form("Baseline vs channel - Run %s;Channel;Baseline", runNumber.c_str()), nChannels, 0, nChannels);
                 frame_base->SetStats(0);
                 frame_base->GetYaxis()->SetRangeUser(yMin-pad, yMax+pad);
                 frame_base->Draw();
@@ -2050,7 +2185,9 @@ int main(int argc, char* argv[]) {
                 for (int d=0; d<4; ++d) { for (int ch=0; ch<nChannels; ++ch) { double v = baseline_sigma.at(d).at(ch); if (v<yMin_sig) yMin_sig=v; if (v>yMax_sig) yMax_sig=v; } }
                 if (!(yMax_sig>yMin_sig)) { yMin_sig=0; yMax_sig=1; }
                 double pad_sig = 0.05*(yMax_sig-yMin_sig+1e-6);
-                TH1F *frame_sig = new TH1F("frame_sig_p7", Form("Sigma vs channel - Run %s;Channel;Sigma", runNumber.c_str()), nChannels, 0, nChannels);
+                TH1F *frame_sig = nullptr;
+                if (isAggregatedInput) frame_sig = new TH1F("frame_sig_p7", Form("Sigma vs channel - %s;Channel;Sigma", aggregatedLabel.c_str()), nChannels, 0, nChannels);
+                else frame_sig = new TH1F("frame_sig_p7", Form("Sigma vs channel - Run %s;Channel;Sigma", runNumber.c_str()), nChannels, 0, nChannels);
                 frame_sig->SetStats(0);
                 frame_sig->GetYaxis()->SetRangeUser(yMin_sig-pad_sig, yMax_sig+pad_sig);
                 frame_sig->Draw();
