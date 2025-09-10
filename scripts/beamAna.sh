@@ -46,7 +46,7 @@ if [[ -z "$settings" || -z "$beamset" ]]; then
 fi
 
 HOME_DIR="$(cd "$SCRIPTS_DIR/.." && pwd)"
-inputs_glob=${inputs_glob:-"$HOME_DIR/converted-data/*_converted.root"}
+inputs_glob=${inputs_glob:-"$HOME_DIR/converted-data/*BEAM*_converted.root"}
 out_dir=${out_dir:-"$HOME_DIR/converted-data/beam-sets"}
 
 # Resolve JSON via finder to extract IO dirs and options
@@ -62,7 +62,17 @@ mkdir -p "$out_dir"
 
 # Aggregate
 cd "$HOME_DIR/build"
+# Collect inputs and filter to BEAM files only
 inputs=( $(ls $inputs_glob 2>/dev/null || true) )
+# Extra guard in case a broad glob is provided
+tmp_inputs=()
+for f in "${inputs[@]}"; do
+  base=$(basename "$f")
+  if [[ "$base" == *"_BEAM_"* ]]; then
+    tmp_inputs+=("$f")
+  fi
+done
+inputs=("${tmp_inputs[@]}")
 if [[ ${#inputs[@]} -eq 0 ]]; then echo "No inputs matched $inputs_glob"; exit 0; fi
 ./beamAggregator "$beamset" "$out_dir" "${inputs[@]}"
 

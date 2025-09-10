@@ -47,6 +47,12 @@ add_executable( dataAnalyzer ${CMAKE_CURRENT_SOURCE_DIR}/src/dataAnalyzer.cpp)
 target_include_directories( dataAnalyzer PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
 target_link_libraries( dataAnalyzer ${OCA_LIBS} )
 
+# Quick subset report generator (pages 1,2,3,4,5,6,9)
+cmessage( STATUS "Creating beamQuickPlot app..." )
+add_executable( beamQuickPlot ${CMAKE_CURRENT_SOURCE_DIR}/src/beamQuickPlot.cpp)
+target_include_directories( beamQuickPlot PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/inc )
+target_link_libraries( beamQuickPlot ${OCA_LIBS} )
+
 # Beam aggregator app
 add_executable(beamAggregator
     ${CMAKE_CURRENT_SOURCE_DIR}/src/beamAggregator.cpp

@@ -40,12 +40,14 @@ int main(int argc, char** argv) {
     std::string outputFile;
     int nSigma = 5; // consistent with scripts default
     std::string calibPath; // optional (not required for this lightweight clustering)
+    bool maskEdgeChannels = true; // default ON per new requirement
     for (int i=1; i<argc; ++i) {
         std::string a = argv[i];
         if ((a == "-r" || a == "--root-file") && i+1<argc) { inputFile = argv[++i]; }
         else if ((a == "-o" || a == "--output") && i+1<argc) { outputFile = argv[++i]; }
-        else if ((a == "-s" || a == "--n-sigma") && i+1<argc) { nSigma = std::max(1, atoi(argv[++i])); }
+    else if ((a == "-s" || a == "--n-sigma") && i+1<argc) { nSigma = std::max(1, atoi(argv[++i])); }
         else if ((a == "-c" || a == "--cal-file") && i+1<argc) { calibPath = argv[++i]; }
+    else if (a == "--no-edge-mask") { maskEdgeChannels = false; }
         else if (a == "-h" || a == "--help") {
             std::cout << "Usage: clustering -r input_converted.root [-o output_clusters.root] [-s nSigma]" << std::endl;
             return 0;
@@ -134,11 +136,19 @@ int main(int argc, char** argv) {
     TH1F* h_firingChannels[4];
     for (int d=0; d<4; ++d) h_firingChannels[d] = new TH1F(Form("h_firingChannels_D%d", d), Form("Firing channels D%d;Channel;Counts", d), 384, 0, 384);
 
+    // Edge channel helper (same pattern as hits_vs_sigma.cpp): first & last channel of each 64-channel ASIC masked
+    auto isEdgeChannel = [](int ch)->bool {
+        if (ch < 0) return true;
+        int asic = ch / 64;
+        int local = ch % 64;
+        return (local == 0 || local == 63);
+    };
+
     // Event loop: compute per-detector hits above threshold and group contiguous channels
     for (Long64_t i=0; i<nEntries; ++i) {
         for (int d=0; d<4; ++d) t[d]->GetEntry(i);
         // For each detector, estimate baseline from median and sigma from MAD; then mark channels with (val - baseline) > nSigma*sigma
-        auto findClusters = [&](const std::vector<unsigned int>& wave) {
+    auto findClusters = [&](const std::vector<unsigned int>& wave) {
             const int N = (int)wave.size();
             std::vector<int> hits; hits.reserve(64);
             if (N <= 0) return std::vector<std::pair<int,int>>{};
@@ -153,7 +163,8 @@ int main(int argc, char** argv) {
             double sigma = (mad > 0 ? 1.4826*mad : 1.0);
             double thr = med + nSigma * sigma;
             for (int ch=0; ch<N; ++ch) {
-                if ((double)wave[ch] > thr) hits.push_back(ch);
+        if (maskEdgeChannels && isEdgeChannel(ch)) continue;
+        if ((double)wave[ch] > thr) hits.push_back(ch);
             }
             if (hits.empty()) return std::vector<std::pair<int,int>>{};
             std::sort(hits.begin(), hits.end()); hits.erase(std::unique(hits.begin(), hits.end()), hits.end());

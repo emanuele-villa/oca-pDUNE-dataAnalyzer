@@ -1,6 +1,7 @@
 #!/bin/bash
 
-if [[ $INIT_DONE == true ]]; then
+# Be robust to -u (nounset) in caller scripts
+if [[ "${INIT_DONE:-}" == true ]]; then
     echo "Environment is already initialized, not running init.sh again"
 else
 

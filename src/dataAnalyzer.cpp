@@ -1950,7 +1950,23 @@ int main(int argc, char* argv[]) {
             }
         }
     if (cestHeader.empty()) cestHeader = isAggregatedInput ? aggregatedLabel + " summary" : Form("Run %s summary", runNumber.c_str());
-    lat.DrawLatex(0.10, yTop, cestHeader.c_str()); yTop -= dyHead;
+    // If aggregated and header contains 'Collimator', insert a line break before it to avoid overflow
+    if (isAggregatedInput) {
+        size_t posColl = cestHeader.find("Collimator");
+        if (posColl != std::string::npos) {
+            // Split into two lines: up to the comma before 'Collimator' if present
+            size_t splitPos = cestHeader.rfind(',', posColl);
+            if (splitPos == std::string::npos) splitPos = posColl;
+            std::string line1 = cestHeader.substr(0, splitPos);
+            std::string line2 = cestHeader.substr(splitPos);
+            lat.DrawLatex(0.10, yTop, line1.c_str()); yTop -= dyHead;
+            lat.DrawLatex(0.10, yTop, line2.c_str()); yTop -= dyHead;
+        } else {
+            lat.DrawLatex(0.10, yTop, cestHeader.c_str()); yTop -= dyHead;
+        }
+    } else {
+        lat.DrawLatex(0.10, yTop, cestHeader.c_str()); yTop -= dyHead;
+    }
     // Add date and time in CEST right after the title
     auto isAllDigits = [](const std::string &s){ return !s.empty() && std::all_of(s.begin(), s.end(), ::isdigit); };
     std::string base = input_file_base; // e.g., SCD_RUN00488_BEAM_20250901_175435
