@@ -12,6 +12,7 @@
 #include <algorithm>
 #include <numeric>
 #include <string>
+#include <fstream>
 #include "TLine.h"
 #include "TKey.h"
 #include "TPaveText.h"
@@ -19,6 +20,49 @@
 #include "ocaEvent.h"
 
 AnyOption *opt; // Handle the option input
+
+// Helper to list available RAW Event branches (DUNE style)
+static std::vector<std::string> listRawBranches(TChain &chain)
+{
+  std::vector<std::string> out;
+  TObjArray *blist = chain.GetListOfBranches();
+  if (!blist)
+    return out;
+  for (int i = 0; i < blist->GetEntries(); ++i)
+  {
+    TBranch *b = (TBranch *)blist->At(i);
+    std::string n = b->GetName();
+    if (n.rfind("RAW Event", 0) == 0) // starts with
+      out.push_back(n);
+  }
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
+// Resolve branch name; returns empty string if not found.
+static std::string resolveRawBranch(TChain &chain, int board, int side)
+{
+  // Original convention: "RAW Event" for first, then lettered suffix.
+  // Instead of relying on a fixed alphabet string that can desync, inspect actual branches.
+  auto candidates = listRawBranches(chain);
+  if (candidates.empty())
+    return "";
+
+  // Map logical (board, side) to ordinal index = 2*board + side expected by files.
+  int ordinal = 2 * board + side; // side already 0/1/2/3 pattern when passed in for DUNE
+
+  // First branch may be exactly "RAW Event" (no suffix) – treat as ordinal 0.
+  // Remaining branches may be "RAW Event X" with letter suffix.
+  // Build ordered list by scanning and assigning index incrementally.
+  // This assumes file ordering is stable; safer than constructing letters.
+  if (ordinal < (int)candidates.size())
+  {
+    // We need to match ordinal-th branch among sorted candidates while ensuring base name (without considering alphabetical intended order).
+    // Because sorting lexicographically puts "RAW Event" before suffixed variants.
+    return candidates[ordinal];
+  }
+  return "";
+}
 
 int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, float sigmaraw_cut = 3, float sigma_cut = 6, int board = 0, int side = 0, bool pdf_only = false, bool fast = true, bool fit = false, bool single_file = true, bool last_board = false, int max_ADC = -1, bool isDune = false)
 {
@@ -38,7 +82,8 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
     foutput->cd();
   }
 
-  std::string alphabet = "ABCDEFGHIJKLMNOPQRSTWXYZ";
+  // Note: original code used a hard-coded alphabet missing some letters, leading to mismatches.
+  // We now rely on dynamic discovery (see resolveRawBranch) when isDune=true.
   // Read raw event from input chain TTree
   std::vector<unsigned int> *raw_event = 0;
   TBranch *RAW = 0;
@@ -48,34 +93,58 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
   {
     if (side == 0)
     {
-      chain.SetBranchAddress("RAW Event J5", &raw_event, &RAW);
+      branch_name = "RAW Event J5";
+      chain.SetBranchAddress(branch_name, &raw_event, &RAW);
     }
     else if (side == 1)
     {
-      chain.SetBranchAddress("RAW Event J7", &raw_event, &RAW);
+      branch_name = "RAW Event J7";
+      chain.SetBranchAddress(branch_name, &raw_event, &RAW);
     }
     else
     {
-      std::cout << "Side must be 0 or 1" << std::endl;
+      std::cerr << "[calibration] Invalid side=" << side << " (expected 0 or 1)" << std::endl;
       return 1;
     }
   }
   else
   {
-    if (board == 0 && side == 0)
+    std::string resolved = resolveRawBranch(chain, board, side);
+    if (resolved.empty())
     {
-      branch_name = (TString) "RAW Event";
-    } 
-    else
-    {
-      branch_name = (TString) "RAW Event " + alphabet[2 * board + side];
+      std::cerr << "[calibration] ERROR: could not resolve RAW Event branch for board=" << board << " side=" << side << std::endl;
+      auto avail = listRawBranches(chain);
+      if (avail.empty())
+        std::cerr << "[calibration] No branches starting with 'RAW Event' present in input." << std::endl;
+      else
+      {
+        std::cerr << "[calibration] Available RAW Event branches:" << std::endl;
+        for (auto &n : avail) std::cerr << "  - " << n << std::endl;
+      }
+      return 2;
     }
+    branch_name = resolved;
     chain.SetBranchAddress(branch_name, &raw_event, &RAW);
   }
 
+  // Attempt first entry read to validate branch address.
+  if (chain.GetEntries() > 0)
+  {
+    chain.GetEntry(0);
+  }
+  if (!raw_event)
+  {
+    std::cerr << "[calibration] ERROR: branch '" << branch_name << "' is not bound (null pointer) – aborting." << std::endl;
+    return 3;
+  }
 
-  chain.GetEntry(0);
+
   int NChannels = raw_event->size();
+  if (NChannels == 0)
+  {
+    std::cerr << "[calibration] ERROR: branch '" << branch_name << "' has zero channels in first entry." << std::endl;
+    return 4;
+  }
   int NVas = NChannels / 64;
 
   // histos
@@ -130,11 +199,7 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
   char delay[100];
   
 
-  if (isDune)
-  {
-    side = 2 * board + side;
-    board = 0; 
-  }
+  // Removed side re-assignment for DUNE to avoid confusion and off-by-one mapping issues.
 
   ofstream calfile;
   if (!pdf_only)
@@ -220,13 +285,18 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
     //   cout << "\tEvent size " << raw_event->size() << endl;
     // }
 
-    if (raw_event->size() == NChannels)
+    if (raw_event && raw_event->size() == (size_t)NChannels)
     {
       for (int k = 0; k < raw_event->size(); k++)
       {
         // Filling histos for each channel for Gaussian Fit
         hADC[k]->Fill(raw_event->at(k));
       }
+    }
+    else if(!raw_event)
+    {
+      std::cerr << "[calibration] WARNING: null raw_event pointer encountered while filling pedestals (event=" << index_event << ")" << std::endl;
+      return 5;
     }
   }
 
@@ -307,7 +377,7 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
   {
     chain.GetEntry(index_event);
 
-    if (raw_event->size() == pedestals->size())
+  if (raw_event && raw_event->size() == pedestals->size())
     {
       // Pedestal subtraction
       std::vector<float> signal;
@@ -332,6 +402,11 @@ int compute_calibration(TChain &chain, TString output_filename, TCanvas &c1, flo
           }
         }
       }
+    }
+    else if(!raw_event)
+    {
+      std::cerr << "[calibration] WARNING: null raw_event pointer encountered during CN subtraction (event=" << index_event << ")" << std::endl;
+      return 6;
     }
   }
 
