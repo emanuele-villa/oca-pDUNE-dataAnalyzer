@@ -156,41 +156,39 @@ int main(int argc, char* argv[]) {
     LogInfo << "Reading calibration file..." << std::endl;
     std::string line;
     for (int detit = 0; detit < nDetectors ; detit++){
-        // skip the first 18 lines, header
-        for (int i = 0; i < 18; i++) std::getline(calFile, line); // skipping, header
+        int channelLinesRead = 0;
+        while (channelLinesRead < nChannels && std::getline(calFile, line)) {
+            if (line.empty()) continue;
+            if (line[0] == '#') continue; // skip any header/comment lines
 
-        for (int i = 0; i < nChannels; i++) {
-            std::getline(calFile, line);
-            // values are separated by commas, read all and store line by line
+            // Accept both comma separated and whitespace separated
+            for (char &c : line) if (c == '\t') c = ' '; // normalize tabs
+            // Split by comma first turning commas into spaces for easier parsing
+            for (char &c : line) if (c == ',') c = ' ';
             std::istringstream iss(line);
-            std::vector <float> values;
-            float value;
-            std::string token;
-            while (std::getline(iss, token, ',')) {
-                std::istringstream iss_value(token);
-                float value;
-                if (iss_value >> value) {
-                values.push_back(value);
-                }
+            std::vector<float> values; values.reserve(10);
+            float tmpv;
+            while (iss >> tmpv) values.push_back(tmpv);
+
+            if (values.size() < 6) {
+                LogWarning << "Calibration: skipping malformed line (det=" << detit << ") tokens=" << values.size() << ": " << line << std::endl;
+                continue; // don't abort entire parsing
             }
 
-            // check if the values are correct
-            if (values.size() != 8) {
-                LogError << "Error: wrong number of values in the calibration file" << std::endl;
-                LogError << "Values size: " << values.size() << std::endl;
-                return 1;
+            int this_channel = (int)values[0];
+            if (this_channel < 0 || this_channel >= nChannels) {
+                LogWarning << "Calibration: channel out of range (" << this_channel << ") det=" << detit << std::endl;
+                continue;
             }
-
-            // store the values
-            int this_channel = values.at(0);
-            float this_baseline = values.at(3);
-            float this_baseline_sigma = values.at(5);
-
+            float this_baseline = values[3];
+            float this_baseline_sigma = values[5];
+            baseline[detit][this_channel] = this_baseline;
+            baseline_sigma[detit][this_channel] = this_baseline_sigma;
             if (verbose) LogInfo << "Channel: " << this_channel << " Detector: " << detit << " Baseline: " << this_baseline << " Baseline sigma: " << this_baseline_sigma << std::endl;
-
-            baseline.at(detit).emplace(baseline.at(detit).begin() + this_channel, this_baseline);
-            baseline_sigma.at(detit).emplace(baseline_sigma.at(detit).begin() + this_channel, this_baseline_sigma);
-
+            channelLinesRead++;
+        }
+        if (channelLinesRead < nChannels) {
+            LogWarning << "Calibration: detector " << detit << " only provided " << channelLinesRead << "/" << nChannels << " channels; missing channels left at 0." << std::endl;
         }
     }
 
