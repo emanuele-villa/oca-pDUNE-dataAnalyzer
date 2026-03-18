@@ -87,15 +87,11 @@ int main(int argc, char *argv[])
     opt->addUsage("  -v, --verbose    ................................. Verbose ");
     opt->addUsage("  --boards         ................................. Number of DE10Nano boards connected ");
     opt->addUsage("  --nevents        ................................. Number of events to be read ");
-    opt->addUsage("  --gsi            ................................. To convert data from GSI hybrids (10 ADC per detector)");
-    opt->addUsage("  --dune           ................................. To convert data from protoDUNE setup (3 DAMPE detectors with adapter)");
     opt->setOption("boards");
     opt->setOption("nevents");
 
     opt->setFlag("help", 'h');
     opt->setFlag("verbose", 'v');
-    opt->setFlag("gsi");
-    opt->setFlag("dune");
 
     opt->processFile("./options.txt");
     opt->processCommandArgs(argc, argv);
@@ -166,62 +162,15 @@ int main(int argc, char *argv[])
     event_info->Branch("trigger_id",      &out_trigger_id,    "trigger_id/L");
     event_info->Branch("file_offset",     &out_file_offset,   "file_offset/L");
 
-    bool dune = false;
-
-    // Use getFlag for boolean flags
-    if (opt->getFlag("dune"))
-    {
-        dune = true;
-        std::cout << "\tFormatting data for protoDUNE setup" << std::endl;
-    }
+    std::cout << "\tFormatting data for protoDUNE setup" << std::endl;
 
     for (size_t detector = 0; detector < max_detectors; detector++)
     {   
-        if (!dune)
-        {
-            if (detector == 0)
-            {
-                branch_name = (TString) "RAW Event J5";
-                raw_events_tree.at(detector) = new TTree("raw_events", "raw_events");
-                raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
-                raw_events_tree.at(detector)->SetAutoSave(0);
-            }
-            else
-            {
-                ttree_name = (TString) "raw_events_" + alphabet.at(detector);
-                raw_events_tree.at(detector) = new TTree(ttree_name, ttree_name);
-                if(detector%2)
-                {
-                    branch_name = (TString) "RAW Event J7";
-                    raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
-                }
-                else
-                {
-                    branch_name = (TString) "RAW Event J5";
-                    raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
-                }
-                raw_events_tree.at(detector)->SetAutoSave(0);
-            }
-        }
-        else
-        {   
-            if (detector == 0)
-            {
-                ttree_name = (TString) "raw_events";
-                raw_events_tree.at(detector) = new TTree(ttree_name, ttree_name);
-                branch_name = (TString) "RAW Event";
-                raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
-                raw_events_tree.at(detector)->SetAutoSave(0);
-            }
-            else
-            {
-                ttree_name = (TString) "raw_events_" + alphabet.at(detector);
-                raw_events_tree.at(detector) = new TTree(ttree_name, ttree_name);
-                branch_name = (TString) "RAW Event " + alphabet.at(detector);
-                raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
-                raw_events_tree.at(detector)->SetAutoSave(0);
-            }
-        }
+        ttree_name = TString::Format("detector_%d", detector);
+        raw_events_tree.at(detector) = new TTree(ttree_name, ttree_name);
+        branch_name = (TString) "data";
+        raw_events_tree.at(detector)->Branch(branch_name, &raw_event_vector.at(detector));
+        raw_events_tree.at(detector)->SetAutoSave(0);
     }
 
     // Find if there is an offset before first event
@@ -234,7 +183,6 @@ int main(int argc, char *argv[])
     int evtnum = 0;
     int evt_to_read = -1;
     int boards = 0;
-    bool gsi = false;
     unsigned long fw_version = 0;
     int board_id = -1;
     int trigger_number = -1;
@@ -252,25 +200,7 @@ int main(int argc, char *argv[])
     uint64_t old_offset = 0;
     char dummy[100];
 
-    if (dune)
-    {
-        boards = 1;
-    }
-    else if (!opt->getValue("boards"))
-    {
-        std::cout << "ERROR: you need to provide the number of boards connected" << std::endl;
-        return 2;
-    }
-    else
-    {
-        boards = atoi(opt->getValue("boards"));
-    }
-
-    if (opt->getValue("gsi"))
-    {
-        gsi = true;
-        std::cout << "\tFormatting data for GSI hybrids" << std::endl;
-    }
+    boards = 1;
 
     if (opt->getValue("nevents"))
     {
@@ -330,14 +260,7 @@ int main(int argc, char *argv[])
             {
                 padding_offset = 0;
                 raw_event_buffer.clear();
-                if (!dune)
-                {
-                    raw_event_buffer = reorder(read_event(file, offset, evt_size, verbose, false));
-                }
-                else
-                {
-                    raw_event_buffer = reorder_DUNE(read_event(file, offset, evt_size, verbose, false));
-                }
+                raw_event_buffer = reorder_DUNE(read_event(file, offset, evt_size, verbose, false));
             }
 
             // Update event-level external timestamp aggregation (prefer first non-zero)
@@ -346,45 +269,22 @@ int main(int argc, char *argv[])
                 have_ev_ext = true;
             }
 
-            if (!gsi && !dune)
-            {
-                raw_event_vector.at(2 * board_id).clear();
-                raw_event_vector.at(2 * board_id + 1).clear();
-                raw_event_vector.at(2 * board_id) = std::vector<unsigned int>(raw_event_buffer.begin(), raw_event_buffer.begin() + raw_event_buffer.size() / 2);
-                raw_event_vector.at(2 * board_id + 1) = std::vector<unsigned int>(raw_event_buffer.begin() + raw_event_buffer.size() / 2, raw_event_buffer.end());
-                raw_events_tree.at(2 * board_id)->Fill();
-                raw_events_tree.at(2 * board_id + 1)->Fill();
-            }
-            else if (gsi)
-            {
-                for (int hole = 1; hole <= 10; hole++)
-                {
-                    raw_event_buffer.erase(raw_event_buffer.begin() + hole * 64, raw_event_buffer.begin() + (hole + 1) * 64);
-                }
-                raw_event_vector.at(2 * board_id).clear();
-                raw_event_vector.at(2 * board_id) = raw_event_buffer;
-                raw_events_tree.at(2 * board_id)->Fill();
-            }
-            else if (dune)
-            {   
+            raw_event_vector.at(2 * board_id).clear();
+            raw_event_vector.at(2 * board_id + 1).clear();
+            raw_event_vector.at(2 * board_id + 2).clear();
+            raw_event_vector.at(2 * board_id + 3).clear();
 
-                raw_event_vector.at(2 * board_id).clear();
-                raw_event_vector.at(2 * board_id + 1).clear();
-                raw_event_vector.at(2 * board_id + 2).clear();
-                raw_event_vector.at(2 * board_id + 3).clear();
+            uint adc_length = raw_event_buffer.size() / ADC_N;
+            
+            raw_event_vector.at(2 * board_id) = std::vector<unsigned int>(raw_event_buffer.begin(), raw_event_buffer.begin() + 2 * adc_length);
+            raw_event_vector.at(2 * board_id + 1) = std::vector<unsigned int>(raw_event_buffer.begin() + 2 * adc_length, raw_event_buffer.begin() + 4 * adc_length);
+            raw_event_vector.at(2 * board_id + 2) = std::vector<unsigned int>(raw_event_buffer.begin() + 4 * adc_length, raw_event_buffer.begin() + 6 * adc_length);
+            raw_event_vector.at(2 * board_id + 3) = std::vector<unsigned int>(raw_event_buffer.begin() + 6 * adc_length, raw_event_buffer.begin() + 8 * adc_length);
 
-                uint adc_length = raw_event_buffer.size() / ADC_N;
-                
-                raw_event_vector.at(2 * board_id) = std::vector<unsigned int>(raw_event_buffer.begin(), raw_event_buffer.begin() + 2 * adc_length);
-                raw_event_vector.at(2 * board_id + 1) = std::vector<unsigned int>(raw_event_buffer.begin() + 2 * adc_length, raw_event_buffer.begin() + 4 * adc_length);
-                raw_event_vector.at(2 * board_id + 2) = std::vector<unsigned int>(raw_event_buffer.begin() + 4 * adc_length, raw_event_buffer.begin() + 6 * adc_length);
-                raw_event_vector.at(2 * board_id + 3) = std::vector<unsigned int>(raw_event_buffer.begin() + 6 * adc_length, raw_event_buffer.begin() + 8 * adc_length);
-
-                raw_events_tree.at(2 * board_id)->Fill();
-                raw_events_tree.at(2 * board_id + 1)->Fill();
-                raw_events_tree.at(2 * board_id + 2)->Fill();
-                raw_events_tree.at(2 * board_id + 3)->Fill();
-            }
+            raw_events_tree.at(2 * board_id)->Fill();
+            raw_events_tree.at(2 * board_id + 1)->Fill();
+            raw_events_tree.at(2 * board_id + 2)->Fill();
+            raw_events_tree.at(2 * board_id + 3)->Fill();
 
             if (boards_read == boards)
             {
@@ -427,19 +327,9 @@ int main(int argc, char *argv[])
 
         if (raw_events_tree.at(detector)->GetEntries())
         {
-            if (filled == 0)
-            {
-                raw_events_tree.at(detector)->SetName("raw_events");
-                raw_events_tree.at(detector)->SetTitle("raw_events");
-                raw_events_tree.at(detector)->Write();
-            }
-            else
-            {
-                std::string name = "raw_events_" + alphabet.substr(filled, 1);
-                raw_events_tree.at(detector)->SetName(name.c_str());
-                raw_events_tree.at(detector)->SetTitle(name.c_str());
-                raw_events_tree.at(detector)->Write();
-            }
+            raw_events_tree.at(detector)->SetTitle(Form("detector%d", detector));
+            raw_events_tree.at(detector)->SetName(Form("detector%d", detector));
+            raw_events_tree.at(detector)->Write();
             filled++;
         }
     }
