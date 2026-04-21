@@ -3,7 +3,7 @@
 Tools to convert, calibrate, analyze, and visualize NP02 beam plug tracker data.
 DAQ repo: https://github.com/emanuele-villa/oca-pDUNE-DAQ
 
-Data location: `/eos/user/e/evilla/dune/np02-beam-monitor`. Request access via emanuele.villa@cern.ch. Ask Emanuele for the web interface URL if preferred.
+Data location: `/eos/project/e/ep-nu/evilla/np02-beam-monitor/rawData`. Request access via emanuele.villa@cern.ch. Ask Emanuele for the web interface URL if preferred.
 
 ## Install
 
