@@ -1,5 +1,5 @@
 {
-    "inputDirectory": "/eos/user/e/evilla/dune/np02-beam-monitor/",
+    "inputDirectory": "/Users/virgolaema/Software/dune/beam-monitor/rawData",
     "outputDirectory": "../output/",
 
     "maxEvents":100000000,

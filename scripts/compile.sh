@@ -12,8 +12,24 @@ source $SCRIPTS_DIR/init.sh
 cleanCompile=false
 noCompile=false
 pwd=$PWD
-nproc=$(nproc)
-nproc_to_use=$((nproc-2))
+
+cpu_count=""
+if command -v nproc >/dev/null 2>&1; then
+    cpu_count=$(nproc)
+elif command -v sysctl >/dev/null 2>&1; then
+    cpu_count=$(sysctl -n hw.ncpu 2>/dev/null)
+elif command -v getconf >/dev/null 2>&1; then
+    cpu_count=$(getconf _NPROCESSORS_ONLN 2>/dev/null)
+fi
+
+if [ -z "$cpu_count" ]; then
+    cpu_count=1
+fi
+
+nproc_to_use=$((cpu_count-2))
+if [ $nproc_to_use -lt 1 ]; then
+    nproc_to_use=1
+fi
 
 # Function to print help message
 print_help() {

@@ -15,6 +15,64 @@ cleanCompile=false
 nsigma=5 # Default value for nSigma
 calRun="" # Added for explicit cal run
 
+clean_output_files() {
+  local baseName="$1"
+  local outDir="$2"
+
+  if [ -z "$baseName" ] || [ -z "$outDir" ]; then
+    return 0
+  fi
+
+  echo "Cleaning output files in $outDir for base name $baseName"
+  rm -f "${outDir}/${baseName}.cal"
+  rm -f "${outDir}/${baseName}.root"
+  rm -f "${outDir}/${baseName}_converted.root"
+  rm -f "${outDir}/${baseName}_formatted.root"
+  rm -f "${outDir}/${baseName}_clusters.root"
+  rm -f "${outDir}/${baseName}"*_report.pdf
+}
+
+ensure_calibration_file() {
+  local calRunPath="$1"
+  local outDir="$2"
+
+  if [ -z "$calRunPath" ] || [ -z "$outDir" ]; then
+    return 1
+  fi
+
+  local calFileName
+  calFileName=$(basename "$calRunPath")
+  calFileName=${calFileName%.*}
+  local calFile="${outDir}/${calFileName}.cal"
+  local calRootFile="${outDir}/${calFileName}.root"
+
+  if [ -f "$calFile" ]; then
+    return 0
+  fi
+
+  echo "Calibration file $calFile is missing. Generating it from $calRunPath."
+
+  if [ ! -f "$calRootFile" ]; then
+    local convert_cal="./PAPERO_convert ${calRunPath} ${calRootFile} --dune"
+    echo "Executing command: $convert_cal"
+    $convert_cal
+    if [ $? -ne 0 ]; then
+      echo "Error: Data conversion failed for calibration run $calRunPath."
+      return 1
+    fi
+  fi
+
+  local extract_calibration="./calibration ${calRootFile} --output ${outDir}/${calFileName} --dune --fast"
+  echo "Executing command: $extract_calibration"
+  $extract_calibration
+  if [ $? -ne 0 ]; then
+    echo "Error: calibration failed for calibration run $calRunPath."
+    return 1
+  fi
+
+  return 0
+}
+
 # Function to print help message
 print_help() {
     echo "*****************************************************************************"
@@ -134,18 +192,30 @@ then
 fi
 
 # Iterate over all the selected runs
-for ((runit = $firstRun; runit <= $lastRun; runit++ ))
+availableRuns=()
+if [ -z "$fileName" ]; then
+  while IFS= read -r runValue; do
+    if [ -n "$runValue" ]; then
+      availableRuns+=("$runValue")
+    fi
+  done < <(find "$inputDirectory" -type f -name "SCD_RUN*.dat" 2>/dev/null \
+      | sed -n 's|.*/SCD_RUN\([0-9]\{5\}\)_.*|\1|p' \
+      | sed 's/^0*//' \
+      | awk -v min="$firstRun" -v max="$lastRun" '($1>=min && $1<=max){print $1}' \
+      | sort -n -u)
+else
+  availableRuns+=("$firstRun")
+fi
+
+if [ ${#availableRuns[@]} -eq 0 ]; then
+  echo "No runs found in $inputDirectory for range $firstRun-$lastRun. Stopping execution."
+  exit 0
+fi
+
+for runit in "${availableRuns[@]}"
 do
   if [ -z $fileName ]
   then
-
-    # clean output files if requested
-    if [ "$cleanFiles" = true ]
-    then
-        echo "Cleaning output files in $outputDirectory for run $runit"
-        rm -f ${outputDirectory}/SCD_RUN$(printf "%05d" $runit)*.root
-        rm -f ${outputDirectory}/SCD_RUN$(printf "%05d" $runit)*.cal
-    fi
 
     echo "Looking for files by run number"
     echo "runit: $runit"
@@ -184,6 +254,12 @@ do
     if [ -z "$runit" ]; then
         runit=$fileName
     fi
+  fi
+
+  # clean output files if requested
+  if [ "$cleanFiles" = true ]
+  then
+      clean_output_files "$fileName" "$outputDirectory"
   fi
 
   if echo "$fileName" | grep -qi "CAL"; then
@@ -260,18 +336,16 @@ do
 
       echo "For calibration, using run: $calRunPath"
 
-      # Verify calibration file exists
-      calFileName=$(basename "$calRunPath")
-      calFileName=${calFileName%.*}
-      calFile="${outputDirectory}/${calFileName}.cal"
-
-      if [ ! -f "$calFile" ]; then
-          echo "Error: Calibration file not found for run $runit. Expected: $calFile"
-          echo "Stopping execution."
+        # Ensure calibration file exists (generate it if missing)
+        if ! ensure_calibration_file "$calRunPath" "$outputDirectory"; then
+          echo "Error: Calibration file could not be generated for run $runit. Stopping execution."
           exit 1
-      fi
+        fi
 
-      echo "Using calibration file: $calFile"
+        calFileName=$(basename "$calRunPath")
+        calFileName=${calFileName%.*}
+        calFile="${outputDirectory}/${calFileName}.cal"
+        echo "Using calibration file: $calFile"
 
       # Check if conversion is needed (file doesn't exist or calibration changed)
       needsConversion=true
