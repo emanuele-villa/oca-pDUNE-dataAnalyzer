@@ -27,11 +27,21 @@ namespace {
 constexpr size_t kMaxDetectors = 16;
 constexpr size_t kChannelsPerDetector = 384;
 
-bool ChannelMask(int channel) {
+bool ChannelMask(int channel, int detector = -1) {
+    // Edge channels at chip boundaries
     int chipNumber = channel / 64;
     (void)chipNumber; // suppress unused warning
     int channelInChip = channel % 64;
-    return (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63);
+    if (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63) {
+        return true;
+    }
+    
+    // Known noisy channels that create hot spot at X≈-40mm, Y≈45mm
+    if (detector == 0 && (channel == 91 || channel == 92)) return true;
+    if (detector == 1 && channel == 181) return true;
+    if (detector == 2 && (channel == 134 || channel == 135)) return true;
+    
+    return false;
 }
 }
 
@@ -343,7 +353,7 @@ int main(int argc, char *argv[]) {
                 float calibrated = adc - pedestal;
                 (*dataVectorsOut[idx])[ch] = calibrated;
 
-                if (useCalibration && !ChannelMask(static_cast<int>(ch))) {
+                if (useCalibration && !ChannelMask(static_cast<int>(ch), static_cast<int>(idx))) {
                     if (calibrated > hitNSigma * sigma) {
                         firingHists[idx]->Fill(ch);
                         hitsInEvent++;
