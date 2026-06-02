@@ -69,50 +69,62 @@ bool isPointInPolygon(double x, double y, const std::vector<std::pair<double, do
     return inside;
 }
 
-// Estimate beam spread via HWHM on 1D projections of the 2D hit map.
+// Fit a Gaussian to a 1D projection within ±2.5 RMS of the peak.
+// Returns {mean, sigma, success} where success=1.0 if the fit converged.
+static std::vector<double> FitGaussian1D(TH1D* proj) {
+    std::vector<double> result = {0.0, 0.0, 0.0};
+    if (!proj || proj->GetEntries() < 5) return result;
+
+    int peakBin = proj->GetMaximumBin();
+    double peakPos = proj->GetBinCenter(peakBin);
+
+    double rms = proj->GetRMS();
+    if (rms <= 0.0) rms = (proj->GetXaxis()->GetXmax() - proj->GetXaxis()->GetXmin()) / 4.0;
+
+    double fitLo = std::max(peakPos - 2.5 * rms, proj->GetXaxis()->GetXmin());
+    double fitHi = std::min(peakPos + 2.5 * rms, proj->GetXaxis()->GetXmax());
+
+    TF1 gaus("_gausFit1D", "gaus", fitLo, fitHi);
+    gaus.SetParameter(0, proj->GetMaximum());
+    gaus.SetParameter(1, peakPos);
+    gaus.SetParameter(2, rms);
+
+    int fitStatus = proj->Fit(&gaus, "QNR");
+    bool ok = (fitStatus == 0)
+              && std::isfinite(gaus.GetParameter(1))
+              && std::isfinite(gaus.GetParameter(2))
+              && std::fabs(gaus.GetParameter(2)) > 0.0;
+
+    if (ok) {
+        result[0] = gaus.GetParameter(1);
+        result[1] = std::fabs(gaus.GetParameter(2));
+        result[2] = 1.0;
+    }
+    return result;
+}
+
+// Fit independent 1D Gaussians to the X and Y projections of the 2D histogram.
 // Returns: {meanX, meanY, sigmaX, sigmaY, success_flag}
 std::vector<double> Fit2DGaussian(TH2F* hist, const std::vector<std::pair<double, double>>& activePolygon) {
     std::vector<double> result = {0, 0, 0, 0, 0};
 
     if (!hist || hist->GetEntries() < 10) return result;
 
-    Int_t binMaxX, binMaxY, binMaxZ;
-    hist->GetMaximumBin(binMaxX, binMaxY, binMaxZ);
-    double peakX = hist->GetXaxis()->GetBinCenter(binMaxX);
-    double peakY = hist->GetYaxis()->GetBinCenter(binMaxY);
-
     TH1D* projX = hist->ProjectionX("_projX_temp");
     TH1D* projY = hist->ProjectionY("_projY_temp");
 
-    int peakBinX = projX->GetMaximumBin();
-    int peakBinY = projY->GetMaximumBin();
-
-    double halfMax = projX->GetMaximum() / 2.0;
-    int leftBinX = peakBinX, rightBinX = peakBinX;
-    while (leftBinX > 1 && projX->GetBinContent(leftBinX) > halfMax) leftBinX--;
-    while (rightBinX < projX->GetNbinsX() && projX->GetBinContent(rightBinX) > halfMax) rightBinX++;
-    double hwhmLeft  = peakX - projX->GetBinCenter(leftBinX);
-    double hwhmRight = projX->GetBinCenter(rightBinX) - peakX;
-
-    halfMax = projY->GetMaximum() / 2.0;
-    int bottomBinY = peakBinY, topBinY = peakBinY;
-    while (bottomBinY > 1 && projY->GetBinContent(bottomBinY) > halfMax) bottomBinY--;
-    while (topBinY < projY->GetNbinsY() && projY->GetBinContent(topBinY) > halfMax) topBinY++;
-    double hwhmBottom = peakY - projY->GetBinCenter(bottomBinY);
-    double hwhmTop    = projY->GetBinCenter(topBinY) - peakY;
-
-    // HWHM = sigma * sqrt(2*ln2) ≈ sigma * 1.177; take larger side as proxy for untruncated side
-    double sigmaX = std::max(hwhmLeft, hwhmRight)   / 1.177;
-    double sigmaY = std::max(hwhmBottom, hwhmTop)    / 1.177;
+    std::vector<double> rx = FitGaussian1D(projX);
+    std::vector<double> ry = FitGaussian1D(projY);
 
     delete projX;
     delete projY;
 
-    result[0] = peakX;
-    result[1] = peakY;
-    result[2] = sigmaX;
-    result[3] = sigmaY;
-    result[4] = 1.0;
+    bool success = (rx[2] > 0.5 && ry[2] > 0.5);
+    result[0] = rx[0];
+    result[1] = ry[0];
+    result[2] = rx[1];
+    result[3] = ry[1];
+    result[4] = success ? 1.0 : 0.0;
     return result;
 }
 
