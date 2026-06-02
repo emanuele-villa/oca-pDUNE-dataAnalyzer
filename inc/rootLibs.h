@@ -20,5 +20,6 @@
 #include "TF1.h"
 #include "TPaveStats.h"
 #include "TF2.h"
+#include "TFitResult.h"
 
 #endif // ROOTLIBS_H
