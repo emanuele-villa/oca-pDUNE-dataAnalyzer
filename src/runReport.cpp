@@ -7,6 +7,7 @@
 #include <nlohmann/json.hpp>
 
 #include "CmdLineParser.h"
+#include "GenericToolbox.h"
 #include "Logger.h"
 
 LoggerInit([]{Logger::getUserHeader() << "[" << FILENAME << "]";});
@@ -23,15 +24,98 @@ std::string GetBaseName(std::string const & path) {
         return base;
 }
 
-// Function to check if a channel is an edge channel (chip boundaries)
-bool ChannelMask(int channel) {
+// Function to check if a channel should be masked (chip boundaries + known noisy channels)
+bool ChannelMask(int channel, int detector = -1) {
         // Edge channels are at chip boundaries: 0, 63, 64, 127, 128, 191, 192, 255, 256, 319, 320, 383
         // Each chip has 64 channels, so edge channels are: 0, 63 of each chip
-        // But user specified 0,1,62,63 and multiples, so including adjacent
+        // Masking 0,1,62,63 of each chip (edge + adjacent)
         int chipNumber = channel / 64;
         int channelInChip = channel % 64;
-        return (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63);
+        if (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63) {
+                return true;
+        }
+        
+        // Known noisy channels that create hot spot at X≈-40mm, Y≈45mm
+        // These fire consistently regardless of beam position
+        if (detector == 0 && (channel == 91 || channel == 92)) {
+                return true;  // Detector 0: channels 91-92 (chip 1)
+        }
+        if (detector == 1 && channel == 181) {
+                return true;  // Detector 1: channel 181 (chip 2)
+        }
+        if (detector == 2 && (channel == 134 || channel == 135)) {
+                return true;  // Detector 2: channels 134-135 (chip 2)
+        }
+        
+        return false;
 }
+
+
+// Function to check if a point is inside a polygon using ray casting algorithm
+bool isPointInPolygon(double x, double y, const std::vector<std::pair<double, double>>& polygon) {
+    if (polygon.size() < 3) return false;
+    
+    bool inside = false;
+    size_t n = polygon.size();
+    
+    for (size_t i = 0, j = n - 1; i < n; j = i++) {
+        double xi = polygon[i].first, yi = polygon[i].second;
+        double xj = polygon[j].first, yj = polygon[j].second;
+        
+        if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
+            inside = !inside;
+        }
+    }
+    return inside;
+}
+
+// Estimate beam spread via HWHM on 1D projections of the 2D hit map.
+// Returns: {meanX, meanY, sigmaX, sigmaY, success_flag}
+std::vector<double> Fit2DGaussian(TH2F* hist, const std::vector<std::pair<double, double>>& activePolygon) {
+    std::vector<double> result = {0, 0, 0, 0, 0};
+
+    if (!hist || hist->GetEntries() < 10) return result;
+
+    Int_t binMaxX, binMaxY, binMaxZ;
+    hist->GetMaximumBin(binMaxX, binMaxY, binMaxZ);
+    double peakX = hist->GetXaxis()->GetBinCenter(binMaxX);
+    double peakY = hist->GetYaxis()->GetBinCenter(binMaxY);
+
+    TH1D* projX = hist->ProjectionX("_projX_temp");
+    TH1D* projY = hist->ProjectionY("_projY_temp");
+
+    int peakBinX = projX->GetMaximumBin();
+    int peakBinY = projY->GetMaximumBin();
+
+    double halfMax = projX->GetMaximum() / 2.0;
+    int leftBinX = peakBinX, rightBinX = peakBinX;
+    while (leftBinX > 1 && projX->GetBinContent(leftBinX) > halfMax) leftBinX--;
+    while (rightBinX < projX->GetNbinsX() && projX->GetBinContent(rightBinX) > halfMax) rightBinX++;
+    double hwhmLeft  = peakX - projX->GetBinCenter(leftBinX);
+    double hwhmRight = projX->GetBinCenter(rightBinX) - peakX;
+
+    halfMax = projY->GetMaximum() / 2.0;
+    int bottomBinY = peakBinY, topBinY = peakBinY;
+    while (bottomBinY > 1 && projY->GetBinContent(bottomBinY) > halfMax) bottomBinY--;
+    while (topBinY < projY->GetNbinsY() && projY->GetBinContent(topBinY) > halfMax) topBinY++;
+    double hwhmBottom = peakY - projY->GetBinCenter(bottomBinY);
+    double hwhmTop    = projY->GetBinCenter(topBinY) - peakY;
+
+    // HWHM = sigma * sqrt(2*ln2) ≈ sigma * 1.177; take larger side as proxy for untruncated side
+    double sigmaX = std::max(hwhmLeft, hwhmRight)   / 1.177;
+    double sigmaY = std::max(hwhmBottom, hwhmTop)    / 1.177;
+
+    delete projX;
+    delete projY;
+
+    result[0] = peakX;
+    result[1] = peakY;
+    result[2] = sigmaX;
+    result[3] = sigmaY;
+    result[4] = 1.0;
+    return result;
+}
+
 
 int main(int argc, char* argv[]) {
         // Declare variables at top of main
@@ -373,8 +457,8 @@ int main(int argc, char* argv[]) {
         // Declared early so lazy histogram creation in the event loop can use them
         // For reconstructed centers: X axis [-80,60], double bin count
         double centersXMinimum = -80.0, centersXMaximum = 60.0;
-        double centersYMinimum = -60.0, centersYMaximum = 70.0;
-        int centersBinsX = 50, centersBinsY = 50;
+        double centersYMinimum = -60.0, centersYMaximum = 80.0;
+        int centersBinsX = 25, centersBinsY = 25;
         // Single constant used for the X shift applied during reconstruction and when drawing the active polygon
         double recoXShift = -25.0;
 
@@ -429,7 +513,8 @@ int main(int argc, char* argv[]) {
                         rawDetectorTrees[detectorIndex]->GetEntry(entryIndex);
                 }
 
-                if (verboseMode && entryIndex % 1000 == 0) LogInfo << "Processing event " << entryIndex << std::endl;
+                // if (verboseMode && entryIndex % 1000 == 0) LogInfo << "Processing event " << entryIndex << std::endl;
+                GenericToolbox::displayProgressBar(entryIndex + 1, numberOfEntries, "Processing files...");
 
                 // Count clusters per detector for this event
                 int clustersPerDetector[numberOfDetectors] = {0, 0, 0, 0};
@@ -570,7 +655,7 @@ int main(int argc, char* argv[]) {
 
                                 // Check if this is a hit (above threshold)
                                 double thresholdNSigma = (nSigma > 0 ? (double)nSigma : 5.0);
-                                if (!ChannelMask(channelIndex) && value > thresholdNSigma * sigma) {  // Using configurable sigma threshold
+                                if (!ChannelMask(channelIndex, detectorIndex) && value > thresholdNSigma * sigma) {  // Using configurable sigma threshold with detector-specific masking
                                         hasHits = true;
                                         hitsThisEvent++;
                                         histogramFiringChannels[detectorIndex]->Fill(channelIndex);
@@ -635,7 +720,7 @@ int main(int argc, char* argv[]) {
         }
 
         // Root app
-        TApplication *app = new TApplication("app", &argc, argv);
+        // TApplication *app = new TApplication("app", &argc, argv);
 
         // Set root style
         gStyle->SetOptStat("emruo");
@@ -759,6 +844,11 @@ int main(int argc, char* argv[]) {
         };
         const auto activePolygonPoints = computeActiveAreaPolygon(false);
 
+        // Variables to store Gaussian fit results for beam center plotting
+        double gaussFitMeanX = 0.0, gaussFitMeanY = 0.0;
+        double gaussFitSigmaX = 0.0, gaussFitSigmaY = 0.0;
+        bool gaussFitSuccess = false;
+        
         try {
                 LogInfo << "Creating multi-page PDF report..." << std::endl;
                 auto drawPageTag = [](int page){ TLatex pageNum; pageNum.SetNDC(true); pageNum.SetTextSize(0.015); pageNum.SetTextAlign(33); pageNum.DrawLatex(0.98, 0.98, Form("%d", page)); };
@@ -829,6 +919,7 @@ int main(int argc, char* argv[]) {
                 latex.DrawLatex(xL, yL, "Avg clusters per detector per event (with clusters):");
                 yL -= rowH;
                 double yL_start = yL; // Save starting Y position for beam center info
+                double avgSum012 = 0.0; // Sum for detectors 0, 1, 2
                 for (int detectorIndex = 0; detectorIndex < numberOfDetectors; ++detectorIndex) {
                         double totalClustersInDetector = 0.0;
                         for (int b = 1; b <= histogramClustersPerEvent[detectorIndex]->GetNbinsX(); ++b) {
@@ -837,18 +928,36 @@ int main(int argc, char* argv[]) {
                         double avg = (totalEventsWithClusters > 0) ? (totalClustersInDetector / totalEventsWithClusters) : 0.0;
                         latex.DrawLatex(xL, yL, Form("D%d: %.2f", detectorIndex, avg));
                         yL -= rowH;
+                        if (detectorIndex < 3) avgSum012 += avg; // Accumulate for D0, D1, D2 only
                 }
+                // Add average of D0, D1, D2
+                double avg012 = avgSum012 / 3.0;
+                latex.DrawLatex(xL, yL, Form("Avg (D0-D2): %.2f", avg012));
+                yL -= rowH;
 
-                // Add beam center statistics from 2/3 clusters histogram (on the right side)
-                if (histogramReconstructedCenter2Or3 && histogramReconstructedCenter2Or3->GetEntries() > 0) {
+                // Add beam center statistics from exactly 3 clusters histogram (1 cluster/det) on the right side
+                if (histogramReconstructedCenterExactly3 && histogramReconstructedCenterExactly3->GetEntries() > 0) {
                         double xR = 0.55; // Right column X position
                         double yR = yL_start; // Start at same height as detector averages
                         latex.SetTextSize(0.026);
-                        latex.DrawLatex(xR, yR, "Beam center (2/3 clusters):"); yR -= rowH;
-                        double meanX = histogramReconstructedCenter2Or3->GetMean(1);
-                        double meanY = histogramReconstructedCenter2Or3->GetMean(2);
-                        double sigmaX = histogramReconstructedCenter2Or3->GetRMS(1);
-                        double sigmaY = histogramReconstructedCenter2Or3->GetRMS(2);
+                        latex.DrawLatex(xR, yR, "Beam center (1 cluster/det):"); yR -= rowH;
+                        // Fit 2D Gaussian to get accurate center (handles truncation)
+                        std::vector<double> fitResults = Fit2DGaussian(histogramReconstructedCenterExactly3, activePolygonPoints);
+                        double meanX = fitResults[0];
+                        double meanY = fitResults[1];
+                        double sigmaX = fitResults[2];
+                        double sigmaY = fitResults[3];
+                        bool fitSuccess = (fitResults[4] > 0.5);
+                        if (!fitSuccess) {
+                            LogWarning << "2D Gaussian fit failed, using histogram moments as fallback" << std::endl;
+                        }
+                        // Store in broader scope for plotting (use exactly 3 results)
+                        gaussFitMeanX = meanX;
+                        gaussFitMeanY = meanY;
+                        gaussFitSigmaX = sigmaX;
+                        gaussFitSigmaY = sigmaY;
+                        gaussFitSuccess = fitSuccess;
+                        
                         latex.DrawLatex(xR, yR, Form("Mean X: %.2f mm", meanX)); yR -= rowH;
                         latex.DrawLatex(xR, yR, Form("Mean Y: %.2f mm", meanY)); yR -= rowH;
                         latex.DrawLatex(xR, yR, Form("#sigma_{X}: %.2f mm", sigmaX)); yR -= rowH;
@@ -1047,6 +1156,33 @@ int main(int argc, char* argv[]) {
                 // Mark global origin
                 TMarker *centerMarker3 = new TMarker(0.0, 0.0, kFullCircle);
                 centerMarker3->SetMarkerColor(kRed); centerMarker3->SetMarkerSize(1.2); centerMarker3->Draw("SAME");
+                
+                // Draw 1-sigma Gaussian contour ellipse for exactly 3 clusters
+                TEllipse *gaussianContour3 = nullptr;
+                TMarker *gaussianCenterMarker3 = nullptr;
+                std::vector<double> fitResults3 = Fit2DGaussian(histogramReconstructedCenterExactly3, activePolygonPoints);
+                double meanX3 = fitResults3[0];
+                double meanY3 = fitResults3[1];
+                double sigmaX3 = fitResults3[2];
+                double sigmaY3 = fitResults3[3];
+                bool fitSuccess3 = (fitResults3[4] > 0.5);
+                if (fitSuccess3 && sigmaX3 > 0 && sigmaY3 > 0) {
+                    gaussianContour3 = new TEllipse(meanX3, meanY3, sigmaX3, sigmaY3);
+                    gaussianContour3->SetLineColor(kMagenta+2);
+                    gaussianContour3->SetLineWidth(3);
+                    gaussianContour3->SetLineStyle(1);
+                    gaussianContour3->SetFillStyle(0);
+                    gaussianContour3->Draw("SAME");
+                    
+                    // Draw purple X at Gaussian center, only if inside plot range
+                    if (meanX3 >= centersXMinimum && meanX3 <= 60.0 &&
+                        meanY3 >= centersYMinimum && meanY3 <= centersYMaximum) {
+                        gaussianCenterMarker3 = new TMarker(meanX3, meanY3, 5);
+                        gaussianCenterMarker3->SetMarkerColor(kMagenta+2);
+                        gaussianCenterMarker3->SetMarkerSize(3.0);
+                        gaussianCenterMarker3->Draw("SAME");
+                    }
+                }
                 // Overlay active area polygon
                 // Note: do NOT change recoXShift based on spsRunMode here — keep polygon placement identical across modes
                 if (activePolygonPoints.size() >= 3) {
@@ -1054,19 +1190,21 @@ int main(int argc, char* argv[]) {
                         for (int ip=0; ip<(int)activePolygonPoints.size(); ++ip) gpoly->SetPoint(ip, activePolygonPoints[ip].first , activePolygonPoints[ip].second);
                         gpoly->SetPoint((int)activePolygonPoints.size(), activePolygonPoints[0].first, activePolygonPoints[0].second);
                         gpoly->SetLineColor(kBlack); gpoly->SetLineWidth(2); gpoly->SetFillStyle(0); gpoly->Draw("L SAME");
-                        auto leg = new TLegend(0.13, 0.91, 0.68, 0.98);
+                        auto leg = new TLegend(0.12, 0.87, 0.88, 0.98);
                         leg->SetBorderSize(0); leg->SetFillStyle(0); leg->SetTextSize(0.028);
                         leg->SetNColumns(2);
-                        leg->AddEntry(gpoly, "Active area with all 3 detectors", "l");
+                        leg->AddEntry(gpoly, "Active area", "l");
                         leg->AddEntry(centerMarker3, "Beam plug center", "p");
+                        if (gaussianContour3) leg->AddEntry(gaussianContour3, "1#sigma Gaussian", "l");
+                        if (gaussianCenterMarker3) leg->AddEntry(gaussianCenterMarker3, "Gaussian center", "p");
                         leg->Draw();
                 }
                 // Place stats box
                 padMain3->Modified(); padMain3->Update();
                 if (auto st = dynamic_cast<TPaveStats*>(histogramReconstructedCenterExactly3->GetListOfFunctions()->FindObject("stats"))) {
                         double x1u = 30.0, x2u = 60.0;
-                        double y2u = 70.0 - 5.0;
-                        double y1u = y2u - 15.0;
+                        double y2u = 70.0;
+                        double y1u = y2u -20.0;
                         auto userToNDC = [&](TPad* pad, double ux, double uy){
                                 double uxmin = pad->GetUxmin(); double uxmax = pad->GetUxmax();
                                 double uymin = pad->GetUymin(); double uymax = pad->GetUymax();
@@ -1178,24 +1316,48 @@ int main(int argc, char* argv[]) {
                 histogramReconstructedCenter2Or3->Draw("COLZ");
                 TMarker *centerMarker23 = new TMarker(0.0, 0.0, kFullCircle);
                 centerMarker23->SetMarkerColor(kRed); centerMarker23->SetMarkerSize(1.2); centerMarker23->Draw("SAME");
+                
+                // Draw 1-sigma Gaussian contour ellipse if fit was successful
+                TEllipse *gaussianContour = nullptr;
+                TMarker *gaussianCenterMarker = nullptr;
+                if (gaussFitSuccess && gaussFitSigmaX > 0 && gaussFitSigmaY > 0) {
+                    gaussianContour = new TEllipse(gaussFitMeanX, gaussFitMeanY, gaussFitSigmaX, gaussFitSigmaY);
+                    gaussianContour->SetLineColor(kMagenta+2); // Bright magenta for better visibility
+                    gaussianContour->SetLineWidth(3); // Thicker line
+                    gaussianContour->SetLineStyle(1); // Solid line
+                    gaussianContour->SetFillStyle(0); // No fill
+                    gaussianContour->Draw("SAME");
+                    
+                    // Draw purple X at Gaussian center, only if inside plot range
+                    if (gaussFitMeanX >= centersXMinimum && gaussFitMeanX <= 60.0 &&
+                        gaussFitMeanY >= centersYMinimum && gaussFitMeanY <= centersYMaximum) {
+                        gaussianCenterMarker = new TMarker(gaussFitMeanX, gaussFitMeanY, 5); // 5 = X marker
+                        gaussianCenterMarker->SetMarkerColor(kMagenta+2);
+                        gaussianCenterMarker->SetMarkerSize(3.0);
+                        gaussianCenterMarker->Draw("SAME");
+                    }
+                }
                 if (activePolygonPoints.size() >= 3) {
                         auto gpoly = new TGraph((int)activePolygonPoints.size()+1);
                         for (int ip=0; ip<(int)activePolygonPoints.size(); ++ip) gpoly->SetPoint(ip, activePolygonPoints[ip].first, activePolygonPoints[ip].second);
                         gpoly->SetPoint((int)activePolygonPoints.size(), activePolygonPoints[0].first, activePolygonPoints[0].second);
                         gpoly->SetLineColor(kBlack); gpoly->SetLineWidth(2); gpoly->SetFillStyle(0); gpoly->Draw("L SAME");
-                        auto leg = new TLegend(0.13, 0.91, 0.68, 0.98);
-                        leg->SetBorderSize(0); leg->SetFillStyle(0); leg->SetTextSize(0.028);
+                        auto leg = new TLegend(0.12, 0.87, 0.88, 0.98);
+                        leg->SetBorderSize(0); leg->SetFillStyle(0);
+                        leg->SetTextSize(0.028);
                         leg->SetNColumns(2);
-                        leg->AddEntry(gpoly, "Active area with all 3 detectors", "l");
+                        leg->AddEntry(gpoly, "Active area", "l");
                         leg->AddEntry(centerMarker23, "Beam plug center", "p");
+                        if (gaussianContour) leg->AddEntry(gaussianContour, "1#sigma Gaussian", "l");
+                        if (gaussianCenterMarker) leg->AddEntry(gaussianCenterMarker, "Gaussian center", "p");
                         leg->Draw();
                 }
                 // Place stats box
                 padMain23->Modified(); padMain23->Update();
                 if (auto st = dynamic_cast<TPaveStats*>(histogramReconstructedCenter2Or3->GetListOfFunctions()->FindObject("stats"))) {
                         double x1u = 30.0, x2u = 60.0;
-                        double y2u = 70.0 - 5.0;
-                        double y1u = y2u - 15.0;
+                        double y2u = 70.0;
+                        double y1u = y2u - 20.0;
                         auto userToNDC = [&](TPad* pad, double ux, double uy){
                                 double uxmin = pad->GetUxmin(); double uxmax = pad->GetUxmax();
                                 double uymin = pad->GetUymin(); double uymax = pad->GetUymax();
