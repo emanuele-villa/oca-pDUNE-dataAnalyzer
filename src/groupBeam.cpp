@@ -3,6 +3,11 @@
 #include "cppLibs.h"
 #include "rootLibs.h"
 
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <set>
+
 #include "CmdLineParser.h"
 #include "Logger.h"
 
@@ -162,8 +167,6 @@ struct EventData {
     Long64_t evt_size, fw_version, trigger_number, board_id, timestamp, ext_timestamp, trigger_id, file_offset;
     std::vector<std::vector<float>> detectorData;
     std::vector<std::vector<float>> rawDetectorData;
-    std::vector<std::vector<float>> pedestalData;
-    std::vector<std::vector<float>> sigmaData;
     
     // Clusters data
     std::vector<int> cluster_detector;
@@ -172,7 +175,7 @@ struct EventData {
     std::vector<int> cluster_size;
     std::vector<float> cluster_amplitude;
     
-    EventData() : detectorData(4), rawDetectorData(4), pedestalData(4), sigmaData(4) {}
+    EventData() : detectorData(4), rawDetectorData(4) {}
 };
 
 int main(int argc, char* argv[]) {
@@ -187,6 +190,7 @@ int main(int argc, char* argv[]) {
 
     clp.addDummyOption("Triggers");
     clp.addTriggerOption("verboseMode", {"-v"}, "Run in verbose mode");
+    clp.addTriggerOption("forceOverwrite", {"-f", "--force"}, "Force overwrite existing grouped ROOT files");
 
     clp.addDummyOption();
 
@@ -202,6 +206,7 @@ int main(int argc, char* argv[]) {
     LogInfo << clp.getValueSummary() << std::endl << std::endl;
 
     bool verbose = clp.isOptionTriggered("verboseMode");
+    bool forceOverwrite = clp.isOptionTriggered("forceOverwrite");
     
     std::string inputDir = clp.getOptionVal<std::string>("inputDir");
     std::string outputDir = clp.getOptionVal<std::string>("outputDir");
@@ -242,42 +247,93 @@ int main(int argc, char* argv[]) {
     std::map<std::string, std::vector<TTree*>> outputTrees_rawDetectors;
     std::map<std::string, std::vector<TTree*>> outputTrees_pedestals;
     std::map<std::string, std::vector<TTree*>> outputTrees_sigmas;
+    
+    // Track output keys that should be skipped (file exists and not forcing overwrite)
+    std::set<std::string> skippedOutputKeys;
 
     const int nDetectors = 4;
     const int nChannels = 384;
 
+    struct OutputStaticData {
+        std::array<std::vector<float>, nDetectors> pedestals;
+        std::array<std::vector<float>, nDetectors> sigmas;
+    };
+
+    std::map<std::string, OutputStaticData> staticDataMap;
+
+    // Persist event buffers across files so ROOT branches always see valid memory
+    EventData eventData;
+
     // Process each input file
     for (const auto& inputFile : inputFiles) {
-        if (inputFile.find("SCD_RUN00284") != std::string::npos ||
-            inputFile.find("SCD_RUN00282") != std::string::npos) {
-            LogWarning << "Skipping problematic file: " << inputFile << std::endl;
+        // Skip known problematic files (contain corrupted data causing ROOT buffer overflow or segfaults)
+        // Note: More files may need to be added as they are discovered during processing
+        if (inputFile.find("SCD_RUN00274") != std::string::npos ||
+            inputFile.find("SCD_RUN00276") != std::string::npos ||
+            inputFile.find("SCD_RUN00278") != std::string::npos ||
+            inputFile.find("SCD_RUN00280") != std::string::npos ||
+            inputFile.find("SCD_RUN00282") != std::string::npos ||
+            inputFile.find("SCD_RUN00284") != std::string::npos ||
+            inputFile.find("SCD_RUN00286") != std::string::npos ||
+            inputFile.find("SCD_RUN00288") != std::string::npos ||
+            inputFile.find("SCD_RUN00290") != std::string::npos ||
+            inputFile.find("SCD_RUN00292") != std::string::npos ||
+            inputFile.find("SCD_RUN00294") != std::string::npos ||
+            inputFile.find("SCD_RUN00296") != std::string::npos ||
+            inputFile.find("SCD_RUN00298") != std::string::npos) {
+            LogWarning << "Skipping known problematic file: " << inputFile << std::endl;
             continue;
         }
-        LogInfo << "Processing: " << inputFile << std::endl;
         
-        TFile* inFile = new TFile(inputFile.c_str(), "READ");
-        if (!inFile->IsOpen()) {
-            LogError << "Cannot open file: " << inputFile << std::endl;
-            continue;
-        }
+        try {
+            LogInfo << "Processing: " << inputFile << std::endl;
+            
+            TFile* inFile = new TFile(inputFile.c_str(), "READ");
+            if (!inFile || !inFile->IsOpen() || inFile->IsZombie()) {
+                LogError << "Cannot open or corrupted file: " << inputFile << std::endl;
+                if (inFile) delete inFile;
+                continue;
+            }
+            
+            // Validate file integrity
+            if (inFile->TestBit(TFile::kRecovered)) {
+                LogWarning << "File was recovered, may be corrupted: " << inputFile << std::endl;
+                inFile->Close();
+                delete inFile;
+                continue;
+            }
 
-        // Get trees
-        TTree* eventInfoTree = (TTree*)inFile->Get("event_info");
-        if (!eventInfoTree) {
-            LogError << "No event_info tree in file: " << inputFile << std::endl;
-            inFile->Close();
-            continue;
-        }
+            // Get trees
+            TTree* eventInfoTree = (TTree*)inFile->Get("event_info");
+            if (!eventInfoTree) {
+                LogError << "No event_info tree in file: " << inputFile << std::endl;
+                inFile->Close();
+                delete inFile;
+                continue;
+            }
 
-        TTree* clustersTree = (TTree*)inFile->Get("clusters");
-        if (!clustersTree) {
-            LogError << "No clusters tree in file: " << inputFile << std::endl;
-            inFile->Close();
-            continue;
-        }
+            TTree* clustersTree = (TTree*)inFile->Get("clusters");
+            if (!clustersTree) {
+                LogError << "No clusters tree in file: " << inputFile << std::endl;
+                inFile->Close();
+                delete inFile;
+                continue;
+            }
+            
+            // Validate tree entries
+            Long64_t nEntries = eventInfoTree->GetEntries();
+            if (nEntries <= 0 || nEntries > 10000000) {
+                LogError << "Suspicious entry count (" << nEntries << ") in file: " << inputFile << std::endl;
+                inFile->Close();
+                delete inFile;
+                continue;
+            }
 
-        std::vector<TTree*> detectorTrees(nDetectors), rawDetectorTrees(nDetectors);
-        std::vector<TTree*> pedestalTrees(nDetectors), sigmaTrees(nDetectors);
+    std::vector<TTree*> detectorTrees(nDetectors), rawDetectorTrees(nDetectors);
+    std::vector<TTree*> pedestalTrees(nDetectors), sigmaTrees(nDetectors);
+    const size_t expectedChannels = static_cast<size_t>(nChannels);
+    std::vector<bool> detSizeWarned(nDetectors, false);
+    std::vector<bool> rawSizeWarned(nDetectors, false);
         
         for (int d = 0; d < nDetectors; ++d) {
             detectorTrees[d] = (TTree*)inFile->Get(Form("detector%d", d));
@@ -286,8 +342,7 @@ int main(int argc, char* argv[]) {
             sigmaTrees[d] = (TTree*)inFile->Get(Form("sigma%d", d));
         }
 
-        // Set up branches for reading
-        EventData eventData;
+    // Set up branches for reading
         eventInfoTree->SetBranchAddress("event_index", &eventData.event_index);
         eventInfoTree->SetBranchAddress("evt_size", &eventData.evt_size);
         eventInfoTree->SetBranchAddress("fw_version", &eventData.fw_version);
@@ -327,82 +382,101 @@ int main(int argc, char* argv[]) {
             if (sigmaTrees[d]) sigmaTrees[d]->SetBranchAddress("sigma", &sigDataPtrs[d]);
         }
 
-        // Read pedestals and sigmas (static data)
-        for (int d = 0; d < nDetectors; ++d) {
-            if (pedestalTrees[d] && pedestalTrees[d]->GetEntries() > 0) {
-                pedestalTrees[d]->GetEntry(0);
-                eventData.pedestalData[d] = *pedDataPtrs[d];
-            }
-            if (sigmaTrees[d] && sigmaTrees[d]->GetEntries() > 0) {
-                sigmaTrees[d]->GetEntry(0);
-                eventData.sigmaData[d] = *sigDataPtrs[d];
-            }
-        }
-
-        // Parse base time from filename
-        std::tm baseTime = parseFilenameTime(inputFile);
-        
-        // Process events
-        Long64_t nEntries = eventInfoTree->GetEntries();
-        for (Long64_t entry = 0; entry < nEntries; ++entry) {
+            // Parse base time from filename
+            std::tm baseTime = parseFilenameTime(inputFile);
+            
+            // Process events - nEntries already validated above
+            for (Long64_t entry = 0; entry < nEntries; ++entry) {
+            if (verbose && entry < 5) LogInfo << "Reading entry " << entry << " from file " << inputFile << std::endl;
             eventInfoTree->GetEntry(entry);
             clustersTree->GetEntry(entry);
             
-            // Copy cluster data
-            if (detectorPtr) eventData.cluster_detector = *detectorPtr;
-            else eventData.cluster_detector.clear();
-            if (startChPtr) eventData.cluster_start_ch = *startChPtr;
-            else eventData.cluster_start_ch.clear();
-            if (endChPtr) eventData.cluster_end_ch = *endChPtr;
-            else eventData.cluster_end_ch.clear();
-            if (sizePtr) eventData.cluster_size = *sizePtr;
-            else eventData.cluster_size.clear();
-            if (amplitudePtr) {
-                if (amplitudePtr->size() > 10000) {
-                    LogWarning << "Amplitude size too large: " << amplitudePtr->size() << ", skipping entry" << std::endl;
-                    eventData.cluster_amplitude.clear();
-                } else {
-                    eventData.cluster_amplitude = *amplitudePtr;
-                    // Replace invalid floats with 0
-                    for (auto& val : eventData.cluster_amplitude) {
-                        if (!std::isfinite(val)) {
-                            val = 0.0f;
-                        }
+            // Copy cluster data with bounds checks (ensure consistent sizes)
+            const size_t maxClusterEntries = 10000;
+            size_t clusterCopyCount = maxClusterEntries;
+            clusterCopyCount = detectorPtr   ? std::min(clusterCopyCount, detectorPtr->size())   : 0;
+            clusterCopyCount = startChPtr    ? std::min(clusterCopyCount, startChPtr->size())    : 0;
+            clusterCopyCount = endChPtr      ? std::min(clusterCopyCount, endChPtr->size())      : 0;
+            clusterCopyCount = sizePtr       ? std::min(clusterCopyCount, sizePtr->size())       : 0;
+            clusterCopyCount = amplitudePtr  ? std::min(clusterCopyCount, amplitudePtr->size())  : clusterCopyCount;
+
+            eventData.cluster_detector.assign(clusterCopyCount, 0);
+            eventData.cluster_start_ch.assign(clusterCopyCount, 0);
+            eventData.cluster_end_ch.assign(clusterCopyCount, 0);
+            eventData.cluster_size.assign(clusterCopyCount, 0);
+            eventData.cluster_amplitude.assign(clusterCopyCount, 0.0f);
+
+            auto copyClusterIntVector = [&](const std::vector<int>* srcPtr, std::vector<int>& dst, const char* label) {
+                if (srcPtr && clusterCopyCount > 0) {
+                    if (srcPtr->size() > clusterCopyCount) {
+                        LogWarning << label << " vector size (" << srcPtr->size() << ") exceeds " << clusterCopyCount
+                                   << ", truncating." << std::endl;
+                    }
+                    for (size_t idx = 0; idx < clusterCopyCount; ++idx) {
+                        dst[idx] = (*srcPtr)[idx];
                     }
                 }
-            } else eventData.cluster_amplitude.clear();
+            };
+
+            copyClusterIntVector(detectorPtr, eventData.cluster_detector, "Cluster detector index");
+            copyClusterIntVector(startChPtr, eventData.cluster_start_ch, "Cluster start channel");
+            copyClusterIntVector(endChPtr, eventData.cluster_end_ch, "Cluster end channel");
+            copyClusterIntVector(sizePtr, eventData.cluster_size, "Cluster size");
+
+            if (amplitudePtr && clusterCopyCount > 0) {
+                if (amplitudePtr->size() > clusterCopyCount) {
+                    LogWarning << "Cluster amplitude vector size (" << amplitudePtr->size() << ") exceeds "
+                               << clusterCopyCount << ", truncating." << std::endl;
+                }
+                for (size_t idx = 0; idx < clusterCopyCount; ++idx) {
+                    const float val = (*amplitudePtr)[idx];
+                    eventData.cluster_amplitude[idx] = std::isfinite(val) ? val : 0.0f;
+                }
+            }
             
-            // Read detector data for this event
+            // Read detector data for this event and clamp to expected channel count
             for (int d = 0; d < nDetectors; ++d) {
+                eventData.detectorData[d].assign(expectedChannels, 0.0f);
+                eventData.rawDetectorData[d].assign(expectedChannels, 0.0f);
+
                 if (detectorTrees[d]) {
                     detectorTrees[d]->GetEntry(entry);
-                    if (detDataPtrs[d]->size() > 10000) {
-                        LogWarning << "Detector " << d << " data size too large: " << detDataPtrs[d]->size() << ", clearing" << std::endl;
-                        eventData.detectorData[d].clear();
-                    } else {
-                        eventData.detectorData[d] = *detDataPtrs[d];
-                        // Replace invalid floats with 0
-                        for (auto& val : eventData.detectorData[d]) {
-                            if (!std::isfinite(val)) {
-                                val = 0.0f;
-                            }
+                    if (detDataPtrs[d] != nullptr && !detDataPtrs[d]->empty()) {
+                        const auto& src = *detDataPtrs[d];
+                        const size_t copyCount = std::min(src.size(), expectedChannels);
+                        for (size_t idx = 0; idx < copyCount; ++idx) {
+                            const float val = src[idx];
+                            eventData.detectorData[d][idx] = std::isfinite(val) ? val : 0.0f;
+                        }
+                        if (src.size() != expectedChannels && !detSizeWarned[d]) {
+                            LogWarning << "Detector " << d << " data size " << src.size()
+                                       << " (expected " << expectedChannels << ") in file " << inputFile
+                                       << ". Clamping to " << expectedChannels << " elements." << std::endl;
+                            detSizeWarned[d] = true;
                         }
                     }
+                } else if (entry == 0) {
+                    LogWarning << "Missing detector tree for detector " << d << " in file " << inputFile << std::endl;
                 }
+
                 if (rawDetectorTrees[d]) {
                     rawDetectorTrees[d]->GetEntry(entry);
-                    if (rawDetDataPtrs[d]->size() > 10000) {
-                        LogWarning << "Raw detector " << d << " data size too large: " << rawDetDataPtrs[d]->size() << ", clearing" << std::endl;
-                        eventData.rawDetectorData[d].clear();
-                    } else {
-                        eventData.rawDetectorData[d] = *rawDetDataPtrs[d];
-                        // Replace invalid floats with 0
-                        for (auto& val : eventData.rawDetectorData[d]) {
-                            if (!std::isfinite(val)) {
-                                val = 0.0f;
-                            }
+                    if (rawDetDataPtrs[d] != nullptr && !rawDetDataPtrs[d]->empty()) {
+                        const auto& src = *rawDetDataPtrs[d];
+                        const size_t copyCount = std::min(src.size(), expectedChannels);
+                        for (size_t idx = 0; idx < copyCount; ++idx) {
+                            const float val = src[idx];
+                            eventData.rawDetectorData[d][idx] = std::isfinite(val) ? val : 0.0f;
+                        }
+                        if (src.size() != expectedChannels && !rawSizeWarned[d]) {
+                            LogWarning << "Raw detector " << d << " data size " << src.size()
+                                       << " (expected " << expectedChannels << ") in file " << inputFile
+                                       << ". Clamping to " << expectedChannels << " elements." << std::endl;
+                            rawSizeWarned[d] = true;
                         }
                     }
+                } else if (entry == 0) {
+                    LogWarning << "Missing raw detector tree for detector " << d << " in file " << inputFile << std::endl;
                 }
             }
 
@@ -420,16 +494,39 @@ int main(int argc, char* argv[]) {
             std::string dateStr = getDateFromFilename(inputFile);  // Use date from filename
             std::string energyStr = config.getEnergyString();
             std::string outputKey = dateStr + "_" + energyStr;
+            
+            // Skip processing if this output key was already skipped due to existing file
+            if (skippedOutputKeys.find(outputKey) != skippedOutputKeys.end()) {
+                continue;  // Skip this entry silently
+            }
 
             if (verbose && entry % 1000 == 0) {
-                LogInfo << "Event " << entry << " -> " << outputKey << std::endl;
+                LogInfo << "Event " << entry << " -> " << outputKey << " | detSizes=[";
+                for (int dd = 0; dd < nDetectors; ++dd) {
+                    LogInfo << eventData.detectorData[dd].size();
+                    if (dd < nDetectors-1) LogInfo << ",";
+                }
+                LogInfo << "] rawSizes=[";
+                for (int dd = 0; dd < nDetectors; ++dd) {
+                    LogInfo << eventData.rawDetectorData[dd].size();
+                    if (dd < nDetectors-1) LogInfo << ",";
+                }
+                LogInfo << "] clusters=" << eventData.cluster_amplitude.size() << std::endl;
             }
 
             // Create output file if needed
             if (outputFiles.find(outputKey) == outputFiles.end()) {
                 std::string outputFileName = outputDir + "/" + outputKey + ".root";
-                LogInfo << "Creating output file: " << outputFileName << std::endl;
                 
+                // Check if file already exists and skip if not forcing overwrite
+                if (!forceOverwrite && std::filesystem::exists(outputFileName)) {
+                    LogInfo << "Output file already exists, skipping: " << outputFileName << " (use -f to overwrite)" << std::endl;
+                    // Mark this key as skipped so we don't try to process it again
+                    skippedOutputKeys.insert(outputKey);
+                    continue;
+                }
+                
+                LogInfo << "Creating output file: " << outputFileName << std::endl;
                 outputFiles[outputKey] = new TFile(outputFileName.c_str(), "RECREATE");
                 
                 // Create event_info tree
@@ -460,6 +557,50 @@ int main(int argc, char* argv[]) {
                 outputTrees_pedestals[outputKey].resize(nDetectors);
                 outputTrees_sigmas[outputKey].resize(nDetectors);
 
+                // Initialize static data storage for this output file and read pedestals/sigmas once
+                auto& staticData = staticDataMap[outputKey];
+                for (int d = 0; d < nDetectors; ++d) {
+                    auto& pedVecOut = staticData.pedestals[d];
+                    auto& sigmaVecOut = staticData.sigmas[d];
+
+                    pedVecOut.assign(expectedChannels, 0.0f);
+                    sigmaVecOut.assign(expectedChannels, 0.0f);
+
+                    if (pedestalTrees[d] && pedestalTrees[d]->GetEntries() > 0) {
+                        pedestalTrees[d]->GetEntry(0);
+                        if (pedDataPtrs[d] != nullptr) {
+                            const auto& pedVecIn = *pedDataPtrs[d];
+                            const size_t copyCount = std::min(pedVecIn.size(), expectedChannels);
+                            for (size_t idx = 0; idx < copyCount; ++idx) {
+                                const float val = pedVecIn[idx];
+                                pedVecOut[idx] = std::isfinite(val) ? val : 0.0f;
+                            }
+                            if (pedVecIn.size() != expectedChannels) {
+                                LogWarning << "Pedestal vector size mismatch for detector " << d
+                                           << " (" << pedVecIn.size() << " elements, expected " << expectedChannels
+                                           << "). Clamping data to " << expectedChannels << "." << std::endl;
+                            }
+                        }
+                    }
+
+                    if (sigmaTrees[d] && sigmaTrees[d]->GetEntries() > 0) {
+                        sigmaTrees[d]->GetEntry(0);
+                        if (sigDataPtrs[d] != nullptr) {
+                            const auto& sigmaVecIn = *sigDataPtrs[d];
+                            const size_t copyCount = std::min(sigmaVecIn.size(), expectedChannels);
+                            for (size_t idx = 0; idx < copyCount; ++idx) {
+                                const float val = sigmaVecIn[idx];
+                                sigmaVecOut[idx] = std::isfinite(val) ? val : 0.0f;
+                            }
+                            if (sigmaVecIn.size() != expectedChannels) {
+                                LogWarning << "Sigma vector size mismatch for detector " << d
+                                           << " (" << sigmaVecIn.size() << " elements, expected " << expectedChannels
+                                           << "). Clamping data to " << expectedChannels << "." << std::endl;
+                            }
+                        }
+                    }
+                }
+
                 for (int d = 0; d < nDetectors; ++d) {
                     // Detector data trees
                     outputTrees_detectors[outputKey][d] = new TTree(Form("detector%d", d), Form("Baseline-subtracted data detector %d", d));
@@ -468,36 +609,84 @@ int main(int argc, char* argv[]) {
                     outputTrees_rawDetectors[outputKey][d] = new TTree(Form("raw_detector%d", d), Form("Raw data detector %d", d));
                     outputTrees_rawDetectors[outputKey][d]->Branch("raw_data", &eventData.rawDetectorData[d]);
 
-                    // Static data trees (write once)
                     outputTrees_pedestals[outputKey][d] = new TTree(Form("pedestal%d", d), Form("Pedestals detector %d", d));
-                    outputTrees_pedestals[outputKey][d]->Branch("pedestal", &eventData.pedestalData[d]);
-                    outputTrees_pedestals[outputKey][d]->Fill();
+                    outputTrees_pedestals[outputKey][d]->Branch("pedestal", &staticData.pedestals[d]);
+                    LogInfo << "Static pedestal vector size for " << outputKey << " detector " << d << ": " << staticData.pedestals[d].size() << std::endl;
+                    if (staticData.pedestals[d].size() <= 200000) {
+                        outputTrees_pedestals[outputKey][d]->Fill();
+                        outputTrees_pedestals[outputKey][d]->Write("", TObject::kOverwrite);
+                    } else {
+                        LogError << "Refusing to write oversized pedestal vector for " << outputKey << " detector " << d << ": size=" << staticData.pedestals[d].size() << std::endl;
+                    }
 
                     outputTrees_sigmas[outputKey][d] = new TTree(Form("sigma%d", d), Form("Sigma detector %d", d));
-                    outputTrees_sigmas[outputKey][d]->Branch("sigma", &eventData.sigmaData[d]);
-                    outputTrees_sigmas[outputKey][d]->Fill();
+                    outputTrees_sigmas[outputKey][d]->Branch("sigma", &staticData.sigmas[d]);
+                    LogInfo << "Static sigma vector size for " << outputKey << " detector " << d << ": " << staticData.sigmas[d].size() << std::endl;
+                    if (staticData.sigmas[d].size() <= 200000) {
+                        outputTrees_sigmas[outputKey][d]->Fill();
+                        outputTrees_sigmas[outputKey][d]->Write("", TObject::kOverwrite);
+                    } else {
+                        LogError << "Refusing to write oversized sigma vector for " << outputKey << " detector " << d << ": size=" << staticData.sigmas[d].size() << std::endl;
+                    }
                 }
+            }
+
+            // Sanity-check sizes before filling to avoid ROOT integer overflows
+            bool skipEntry = false;
+            // Check event_info/cluster vectors (cluster sizes are already bounded earlier)
+            for (int d = 0; d < nDetectors; ++d) {
+                const auto& detv = eventData.detectorData[d];
+                const auto& rawv = eventData.rawDetectorData[d];
+                const auto& pedv = staticDataMap[outputKey].pedestals[d];
+                const auto& sigv = staticDataMap[outputKey].sigmas[d];
+
+                if (detv.size() > 200000 || rawv.size() > 200000) {
+                    LogError << "Suspiciously large detector vector size for detector " << d << ": det=" << detv.size() << ", raw=" << rawv.size() << ", skipping entry " << entry << std::endl;
+                    skipEntry = true; break;
+                }
+                if (pedv.size() > 200000 || sigv.size() > 200000) {
+                    LogError << "Suspiciously large static pedestal/sigma for detector " << d << ": ped=" << pedv.size() << ", sig=" << sigv.size() << ", skipping entry " << entry << std::endl;
+                    skipEntry = true; break;
+                }
+            }
+
+            if (skipEntry) {
+                // Skip writing this entry to avoid corrupting output and to help debugging
+                continue;
             }
 
             // Fill trees
             outputTrees_eventInfo[outputKey]->Fill();
             outputTrees_clusters[outputKey]->Fill();
             for (int d = 0; d < nDetectors; ++d) {
+                if (verbose) LogInfo << "Filling detector tree for " << outputKey << " det " << d << " entry " << entry << std::endl;
                 outputTrees_detectors[outputKey][d]->Fill();
+                if (verbose) LogInfo << "Filled detector tree for " << outputKey << " det " << d << " entry " << entry << std::endl;
+
+                if (verbose) LogInfo << "Filling raw detector tree for " << outputKey << " det " << d << " entry " << entry << std::endl;
                 outputTrees_rawDetectors[outputKey][d]->Fill();
+                if (verbose) LogInfo << "Filled raw detector tree for " << outputKey << " det " << d << " entry " << entry << std::endl;
             }
         }
 
-        // Clean up
-        for (int d = 0; d < nDetectors; ++d) {
-            delete detDataPtrs[d];
-            delete rawDetDataPtrs[d];
-            delete pedDataPtrs[d];
-            delete sigDataPtrs[d];
+            // Clean up
+            for (int d = 0; d < nDetectors; ++d) {
+                delete detDataPtrs[d];
+                delete rawDetDataPtrs[d];
+                delete pedDataPtrs[d];
+                delete sigDataPtrs[d];
+            }
+            
+            inFile->Close();
+            delete inFile;
+            
+        } catch (const std::exception& e) {
+            LogError << "Exception while processing file " << inputFile << ": " << e.what() << std::endl;
+            LogWarning << "Skipping this file and continuing..." << std::endl;
+        } catch (...) {
+            LogError << "Unknown exception while processing file: " << inputFile << std::endl;
+            LogWarning << "Skipping this file and continuing..." << std::endl;
         }
-        
-        inFile->Close();
-        delete inFile;
     }
 
     // Close all output files
