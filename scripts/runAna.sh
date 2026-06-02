@@ -295,10 +295,48 @@ do
   elif echo "$fileName" | grep -qi "BEAM"; then
     # BEAM
     echo "BEAM run detected. Running full analysis chain."
-    if [ -f "${outputDirectory}/${fileName}_converted.root" ] && [ "$cleanFiles" != true ]
-    then
-        echo "File ${outputDirectory}/${fileName}_converted.root already exists. Skipping conversion."
-    else
+    
+    # Check if formatted and clustered files already exist (skip entire chain if so, unless cleanFiles is requested)
+    formattedFile="${outputDirectory}/${fileName}_formatted.root"
+    clusteredFile="${outputDirectory}/${fileName}_clusters.root"
+    
+    skipEntireChain=false
+    if [ "$cleanFiles" != true ]; then
+        if [ -f "${formattedFile}" ] && [ -f "${clusteredFile}" ]; then
+            # Both files exist, validate they have required trees
+            if root -l -q "${formattedFile}" -e "TFile f(\"${formattedFile}\"); bool hasTree = (f.Get(\"detector_0\") != nullptr || f.Get(\"detector0\") != nullptr); if (hasTree) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
+                if root -l -q "${clusteredFile}" -e "TFile f(\"${clusteredFile}\"); if (f.Get(\"clusters\")) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
+                    echo "Formatted and clustered files already exist with valid trees. Skipping conversion/formatting/clustering chain."
+                    skipEntireChain=true
+                fi
+            fi
+        fi
+    fi
+    
+    needsConversion=false
+    if [ "$skipEntireChain" = false ]; then
+        # Always validate that converted.root has required detector trees
+        if [ -f "${outputDirectory}/${fileName}_converted.root" ]; then
+            # Check if the converted file has the required detector trees
+            if root -l -q "${outputDirectory}/${fileName}_converted.root" -e "TFile f(\"${outputDirectory}/${fileName}_converted.root\"); if (f.Get(\"raw_detector0\")) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
+                if [ "$cleanFiles" != true ]; then
+                    echo "File ${outputDirectory}/${fileName}_converted.root already exists with valid trees. Skipping conversion."
+                else
+                    echo "File ${outputDirectory}/${fileName}_converted.root exists but cleanFiles requested. Will re-convert."
+                    rm -f "${outputDirectory}/${fileName}_converted.root"
+                    needsConversion=true
+                fi
+            else
+                echo "Converted file exists but is missing required detector trees. Will re-convert."
+                rm -f "${outputDirectory}/${fileName}_converted.root"
+                needsConversion=true
+            fi
+        else
+            needsConversion=true
+        fi
+    fi
+    
+    if [ "$skipEntireChain" = false ] && [ "$needsConversion" = true ]; then
       # Determine calibration strategy: use previous CAL run's .cal (fallback: next CAL; if current is CAL, use its own)
       currentBaseName=$(basename "$filePath")
       currentIsCAL=false
@@ -347,45 +385,40 @@ do
         calFile="${outputDirectory}/${calFileName}.cal"
         echo "Using calibration file: $calFile"
 
-      # Check if conversion is needed (file doesn't exist or calibration changed)
-      needsConversion=true
-      if [ -f "${outputDirectory}/${fileName}_converted.root" ]; then
-          # Check if the converted file has the required detector trees
-          if root -l -q "${outputDirectory}/${fileName}_converted.root" -e "TFile f(\"${outputDirectory}/${fileName}_converted.root\"); if (f.Get(\"raw_detector0\")) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
-              echo "Converted file exists and has required trees. Checking if calibration matches..."
-              # For now, we'll force re-conversion to ensure calibration is correct
-              # TODO: Add logic to check if calibration file used matches expected
-              echo "Forcing re-conversion to ensure correct calibration is used."
-              rm -f "${outputDirectory}/${fileName}_converted.root"
-          else
-              echo "Converted file exists but is missing required trees. Will re-convert."
-              rm -f "${outputDirectory}/${fileName}_converted.root"
-          fi
+      # Execute the conversion
+      convert_data="./flat_convert ${filePath} ${outputDirectory}/${fileName}_converted.root --dune"
+      echo "Executing command: "$convert_data
+      $convert_data
+      if [ $? -ne 0 ]; then
+          echo "Error: Data conversion failed for run ${runit}. Skipping analysis for this run."
+          fileName="" # reset fileName to exit loop for single file processing
+          continue
       fi
-
-      if [ "$needsConversion" = true ] || [ ! -f "${outputDirectory}/${fileName}_converted.root" ]; then
-          convert_data="./flat_convert ${filePath} ${outputDirectory}/${fileName}_converted.root --dune"
-          echo "Executing command: "$convert_data
-          $convert_data
-          if [ $? -ne 0 ]; then
-              echo "Error: Data conversion failed for run ${runit}. Skipping analysis for this run."
-              continue
-          fi
-      else
-          echo "File ${outputDirectory}/${fileName}_converted.root already exists with correct calibration. Skipping conversion."
+      
+      # Verify the converted file has valid trees
+      if root -l -q "${outputDirectory}/${fileName}_converted.root" -e "TFile f(\"${outputDirectory}/${fileName}_converted.root\"); if (f.Get(\"raw_detector0\")) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_MISSING"; then
+          echo "Error: Conversion completed but output file is missing detector trees."
+          echo "This usually means the source .dat file is corrupted or empty."
+          echo "Removing bad converted file and skipping run ${runit}."
+          rm -f "${outputDirectory}/${fileName}_converted.root"
+          fileName="" # reset fileName to exit loop for single file processing
+          continue
       fi
+      echo "Conversion successful and verified: ${outputDirectory}/${fileName}_converted.root has valid detector trees."
     fi
 
     # Create a formatted file from the converted ROOT and feed it to clustering
-    formattedFile="${outputDirectory}/${fileName}_formatted.root"
+    # Only proceed if we haven't skipped the entire chain
+    if [ "$skipEntireChain" = false ]; then
+        formattedFile="${outputDirectory}/${fileName}_formatted.root"
 
-    if [ -f "${formattedFile}" ]; then
-      # Validate that the formatted file has detector trees before skipping formatting
-      if root -l -q "${formattedFile}" -e "TFile f(\"${formattedFile}\"); bool hasTree = (f.Get(\"detector_0\") != nullptr || f.Get(\"detector0\") != nullptr); if (hasTree) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
-        echo "Formatted file already exists: ${formattedFile}. Skipping formatting step."
-      else
-        echo "Formatted file exists but is missing required detector trees. Removing and will re-format."
-        rm -f "${formattedFile}"
+        if [ -f "${formattedFile}" ]; then
+          # Validate that the formatted file has detector trees before skipping formatting
+          if root -l -q "${formattedFile}" -e "TFile f(\"${formattedFile}\"); bool hasTree = (f.Get(\"detector_0\") != nullptr || f.Get(\"detector0\") != nullptr); if (hasTree) { cout << \"TREE_EXISTS\" << endl; } else { cout << \"TREE_MISSING\" << endl; }" 2>/dev/null | grep -q "TREE_EXISTS"; then
+            echo "Formatted file already exists: ${formattedFile}. Skipping formatting step."
+          else
+            echo "Formatted file exists but is missing required detector trees. Removing and will re-format."
+            rm -f "${formattedFile}"
       fi
     fi
 
@@ -395,6 +428,10 @@ do
       $formatting_command
       if [ $? -ne 0 ]; then
         echo "Error: Formatting failed for run ${runit}. Skipping clustering and report generation for this run."
+        # If formatting fails, the converted file might be corrupted - remove it
+        echo "Removing potentially corrupted converted file: ${outputDirectory}/${fileName}_converted.root"
+        rm -f "${outputDirectory}/${fileName}_converted.root"
+        fileName="" # reset fileName to exit loop for single file processing
         continue
       fi
     fi
@@ -406,16 +443,24 @@ do
     if [ $? -ne 0 ]; then
       echo "Error: Clustering failed for run ${runit}. Removing bad formatted file and skipping report generation for this run."
       rm -f "${formattedFile}"
+      fileName="" # reset fileName to exit loop for single file processing
       continue
     fi
+    fi  # End of skipEntireChain conditional
 
-    runReport_command="./runReport -i ${outputDirectory}/${fileName}_clusters.root -o ${outputDirectory} -s ${nsigma} -v"
+    # Generate report (always try if clusters file exists)
+    clusteredFile="${outputDirectory}/${fileName}_clusters.root"
+    if [ -f "${clusteredFile}" ]; then
+        runReport_command="./runReport -i ${clusteredFile} -o ${outputDirectory} -s ${nsigma} -v"
 
-    echo "Executing command: "$runReport_command
-    $runReport_command
-    if [ $? -ne 0 ]; then
-        echo "Error: Report generation failed for run ${runit}."
-        # Don't continue here as this is the last step
+        echo "Executing command: "$runReport_command
+        $runReport_command
+        if [ $? -ne 0 ]; then
+            echo "Error: Report generation failed for run ${runit}."
+            # Don't continue here as this is the last step
+        fi
+    else
+        echo "Warning: Clustered file not found: ${clusteredFile}. Cannot generate report."
     fi
 
     fileName="" # reset fileName for the next iteration
