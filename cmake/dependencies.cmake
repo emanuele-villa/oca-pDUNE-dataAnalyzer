@@ -76,6 +76,9 @@ if( WITH_ROOT )
 
     add_compile_options("SHELL:${ROOT_CXX_FLAGS}")
     #  add_link_options("SHELL:${ROOT_LINK_FLAGS}")
+    
+    # Add TBB library directory for linking
+    link_directories(/cvmfs/sft.cern.ch/lcg/views/LCG_105a_nxcals_pro/x86_64-el9-gcc13-opt/lib64)
 
   endif( ROOT_FOUND )
 

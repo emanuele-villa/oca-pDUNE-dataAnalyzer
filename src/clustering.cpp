@@ -23,9 +23,19 @@ namespace {
 constexpr size_t kMaxDetectors = 16;
 constexpr size_t kChannelsPerDetector = 384;
 
-bool ChannelMask(int channel) {
+bool ChannelMask(int channel, int detector = -1) {
+    // Edge channels at chip boundaries
     int channelInChip = channel % 64;
-    return (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63);
+    if (channelInChip == 0 || channelInChip == 1 || channelInChip == 62 || channelInChip == 63) {
+        return true;
+    }
+    
+    // Known noisy channels that create hot spot at X≈-40mm, Y≈45mm
+    if (detector == 0 && (channel == 91 || channel == 92)) return true;
+    if (detector == 1 && channel == 181) return true;
+    if (detector == 2 && (channel == 134 || channel == 135)) return true;
+    
+    return false;
 }
 }
 
@@ -260,7 +270,7 @@ int main(int argc, char *argv[]) {
                 if (sigma <= 0.0f) sigma = 1.0f;
                 float value = (*dataVec)[ch];
 
-                bool isHit = !ChannelMask(static_cast<int>(ch)) && (value > nSigmaThreshold * sigma);
+                bool isHit = !ChannelMask(static_cast<int>(ch), static_cast<int>(idx)) && (value > nSigmaThreshold * sigma);
                 if (isHit) {
                     hitChannels.push_back(static_cast<int>(ch));
                     (*outDetectorData[idx])[ch] = value;
