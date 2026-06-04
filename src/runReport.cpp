@@ -69,50 +69,88 @@ bool isPointInPolygon(double x, double y, const std::vector<std::pair<double, do
     return inside;
 }
 
-// Estimate beam spread via HWHM on 1D projections of the 2D hit map.
+// Fit a truncated Gaussian to a 1D projection.
+// lo/hi are the acceptance boundaries; the PDF is explicitly normalised to [lo, hi]
+// so the fit correctly extrapolates beyond the visible range.
+// Falls back to {mean=RMS-mean, sigma=RMS, success=0} if the fit fails.
+static std::vector<double> FitTruncGaus1D(TH1D* proj, double lo, double hi, const char* tag) {
+    double fbMean = proj->GetMean();
+    double fbSigma = proj->GetRMS();
+    std::vector<double> result = {fbMean, fbSigma, 0.0};
+
+    if (!proj || proj->GetEntries() < 5 || fbSigma <= 0.0) return result;
+
+    double scale = proj->Integral("width");
+
+    // Truncated-normal PDF: amplitude × truncnormal_pdf(x; sigma, mean, lo, hi)
+    // ROOT::Math::truncnormal_pdf(x, sigma, mean, a, b) — note sigma before mean
+    TF1 tgaus(Form("_tgaus_%s", tag),
+        [lo, hi](double* x, double* p) -> double {
+            if (p[2] <= 0.0) return 0.0;
+            double norm = ROOT::Math::normal_cdf(hi, p[2], p[1]) - ROOT::Math::normal_cdf(lo, p[2], p[1]);
+            if (norm <= 0.0) return 0.0;
+            return p[0] * ROOT::Math::normal_pdf(x[0], p[2], p[1]) / norm;
+        }, lo, hi, 3);
+
+    double range = hi - lo;
+    tgaus.SetParameter(0, scale);
+    tgaus.SetParameter(1, fbMean);
+    tgaus.SetParameter(2, fbSigma);
+    // Mean allowed to be outside acceptance by at most 1× the range (physical extrapolation only)
+    tgaus.SetParLimits(1, lo - range, hi + range);
+    // Sigma: at least 0.5mm, at most 2× the observable range
+    tgaus.SetParLimits(2, 0.5, range * 2.0);
+
+    int status = proj->Fit(&tgaus, "QNR");  // Quiet, No-store, use function Range
+    double fittedMean  = tgaus.GetParameter(1);
+    double fittedSigma = tgaus.GetParameter(2);
+    bool ok = (status == 0)
+              && std::isfinite(fittedMean)
+              && std::isfinite(fittedSigma)
+              && fittedSigma > 0.0
+              && fittedMean > (lo - range) && fittedMean < (hi + range);
+
+    if (ok) {
+        result[0] = fittedMean;
+        result[1] = fittedSigma;
+        result[2] = 1.0;
+    }
+    return result;
+}
+
+// Fit independent truncated Gaussians to the X and Y projections.
+// Uses the active-area polygon to determine acceptance boundaries.
 // Returns: {meanX, meanY, sigmaX, sigmaY, success_flag}
 std::vector<double> Fit2DGaussian(TH2F* hist, const std::vector<std::pair<double, double>>& activePolygon) {
     std::vector<double> result = {0, 0, 0, 0, 0};
-
     if (!hist || hist->GetEntries() < 10) return result;
 
-    Int_t binMaxX, binMaxY, binMaxZ;
-    hist->GetMaximumBin(binMaxX, binMaxY, binMaxZ);
-    double peakX = hist->GetXaxis()->GetBinCenter(binMaxX);
-    double peakY = hist->GetYaxis()->GetBinCenter(binMaxY);
+    // Acceptance limits: bounding box of the active polygon (fallback: histogram axis range)
+    double xLo = hist->GetXaxis()->GetXmin(), xHi = hist->GetXaxis()->GetXmax();
+    double yLo = hist->GetYaxis()->GetXmin(), yHi = hist->GetYaxis()->GetXmax();
+    if (activePolygon.size() >= 3) {
+        xLo = xHi = activePolygon[0].first;
+        yLo = yHi = activePolygon[0].second;
+        for (const auto& pt : activePolygon) {
+            xLo = std::min(xLo, pt.first);  xHi = std::max(xHi, pt.first);
+            yLo = std::min(yLo, pt.second); yHi = std::max(yHi, pt.second);
+        }
+    }
 
     TH1D* projX = hist->ProjectionX("_projX_temp");
     TH1D* projY = hist->ProjectionY("_projY_temp");
 
-    int peakBinX = projX->GetMaximumBin();
-    int peakBinY = projY->GetMaximumBin();
-
-    double halfMax = projX->GetMaximum() / 2.0;
-    int leftBinX = peakBinX, rightBinX = peakBinX;
-    while (leftBinX > 1 && projX->GetBinContent(leftBinX) > halfMax) leftBinX--;
-    while (rightBinX < projX->GetNbinsX() && projX->GetBinContent(rightBinX) > halfMax) rightBinX++;
-    double hwhmLeft  = peakX - projX->GetBinCenter(leftBinX);
-    double hwhmRight = projX->GetBinCenter(rightBinX) - peakX;
-
-    halfMax = projY->GetMaximum() / 2.0;
-    int bottomBinY = peakBinY, topBinY = peakBinY;
-    while (bottomBinY > 1 && projY->GetBinContent(bottomBinY) > halfMax) bottomBinY--;
-    while (topBinY < projY->GetNbinsY() && projY->GetBinContent(topBinY) > halfMax) topBinY++;
-    double hwhmBottom = peakY - projY->GetBinCenter(bottomBinY);
-    double hwhmTop    = projY->GetBinCenter(topBinY) - peakY;
-
-    // HWHM = sigma * sqrt(2*ln2) ≈ sigma * 1.177; take larger side as proxy for untruncated side
-    double sigmaX = std::max(hwhmLeft, hwhmRight)   / 1.177;
-    double sigmaY = std::max(hwhmBottom, hwhmTop)    / 1.177;
+    std::vector<double> rx = FitTruncGaus1D(projX, xLo, xHi, "X");
+    std::vector<double> ry = FitTruncGaus1D(projY, yLo, yHi, "Y");
 
     delete projX;
     delete projY;
 
-    result[0] = peakX;
-    result[1] = peakY;
-    result[2] = sigmaX;
-    result[3] = sigmaY;
-    result[4] = 1.0;
+    result[0] = rx[0];
+    result[1] = ry[0];
+    result[2] = rx[1];
+    result[3] = ry[1];
+    result[4] = (rx[2] > 0.5 && ry[2] > 0.5) ? 1.0 : 0.0;
     return result;
 }
 
