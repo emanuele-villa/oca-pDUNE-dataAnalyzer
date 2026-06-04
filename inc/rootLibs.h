@@ -21,5 +21,7 @@
 #include "TPaveStats.h"
 #include "TF2.h"
 #include "TFitResult.h"
+#include "Math/PdfFuncMathCore.h"
+#include "Math/ProbFuncMathCore.h"
 
 #endif // ROOTLIBS_H
